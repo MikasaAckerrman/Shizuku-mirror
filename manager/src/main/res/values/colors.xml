@@ -4,4 +4,9 @@
 
     <color name="app_color_light">#3F51B5</color>
     <color name="app_color_dark">#B1B8DF</color>
+
+    <!-- Root button (бывшая карточка терминала) -->
+    <color name="home_root_status_ok">#2E7D32</color>
+    <color name="home_root_status_off">#C62828</color>
+    <color name="home_root_status_error">#EF6C00</color>
 </resources>

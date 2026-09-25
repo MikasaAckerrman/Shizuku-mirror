@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Root button (бывшая карточка терминала) — тёмная тема -->
+    <color name="home_root_status_ok">#81C784</color>
+    <color name="home_root_status_off">#EF9A9A</color>
+    <color name="home_root_status_error">#FFB74D</color>
+</resources>

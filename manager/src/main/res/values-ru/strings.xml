@@ -99,8 +99,12 @@
 \n
 \nДля работы функции экспорта используется SAF (Storage Access Framework). Сообщается, что на MIUI сломаны механизмы SAF, поэтому там может понадобиться вручную извлечь файл из .apk Shizuku или скачать его с GitHub.</string>
     <string name="terminal_tutorial_1">Сначала экспортируйте файлы в любое место на свое усмотрение. Там появятся два файла: %1$s и %2$s.</string>
-    <string name="home_terminal_description">Запуск команд через Shizuku прямиком из любимых приложений-терминалов</string>
-    <string name="home_terminal_title">Применение Shizuku в эмуляторах терминала</string>
+    <string name="home_terminal_description">Проверка статуса рута…</string>
+    <string name="home_terminal_title">Получить рут (KernelSU)</string>
+    <string name="home_root_active">Рут активен (KernelSU)</string>
+    <string name="home_root_inactive">Рут выключен — нажмите для запуска</string>
+    <string name="home_root_starting">Запуск рута… (~20 с)</string>
+    <string name="home_root_error">Сервис Shizuku недоступен</string>
     <string name="home_wireless_adb_description">На Android 11 или выше Вы можете включить отладку по Wi-Fi без дополнительного ПО, без подключения к компьютеру. Пожалуйста, сперва просмотрите инструкцию</string>
     <string name="adb_pairing_tutorial_content_miui">На оболочке MIUI может потребоваться сменить параметр в пункте системных настроек «Уведомления» – «Стиль уведомлений» на «Android».</string>
     <string name="adb_pairing_tutorial_content_steps">Перейдите в «Параметры разработчика» – «Отладка по Wi-Fi». Нажмите на «Сопряжение устройства с помощью кода сопряжения» и увидите шестизначный код.</string>

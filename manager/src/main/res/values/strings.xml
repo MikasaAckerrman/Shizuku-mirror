@@ -83,8 +83,13 @@
     <string name="app_management_item_summary_requires_root">* requires Shizuku runs with root</string>
 
     <!-- Terminal -->
-    <string name="home_terminal_title">Use Shizuku in terminal apps</string>
-    <string name="home_terminal_description">Run commands through Shizuku in terminal apps you like</string>
+    <!-- Root button (бывшая карточка терминала) -->
+    <string name="home_terminal_title">Get root (KernelSU)</string>
+    <string name="home_terminal_description">Checking root status…</string>
+    <string name="home_root_active">Root is active (KernelSU)</string>
+    <string name="home_root_inactive">Root is off — tap to start</string>
+    <string name="home_root_starting">Starting root… (~20 s)</string>
+    <string name="home_root_error">Shizuku service unavailable</string>
     <string name="terminal_tutorial_1">First, Export files to any where you want. You will find two files, %1$s and %2$s.</string>
     <string name="terminal_tutorial_1_description">If there are files with the same name in the selected folder, they will be deleted.\n\nThe export function uses SAF (Storage Access Framework). It\'s reported that MIUI breaks the functions of SAF. If you are using MIUI, you may have to extract the file from Shizuku\'s apk or download from GitHub.</string>
     <string name="terminal_export_files">Export files</string>
