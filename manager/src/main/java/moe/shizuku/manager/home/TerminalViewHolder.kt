@@ -154,6 +154,23 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         // v3 (r1156): экран не гаснет весь прогон — погасший экран = GPU в idle =
         // латентность RPC взлетает (замер 26.09: 1.1с/батч @231МГц vs 0.4с @578)
         itemView.keepScreenOn = true
+        // v3 (r1157): живой прогресс — поллинг хвоста root_run.log вторым adb-сеансом
+        // (v1.3 restore.sh перенаправляет весь вывод в файл — стрим кнопки пуст).
+        // Поллер: daemon-поток, 1 раз в 2с, завершается с running=false.
+        val poller = Thread {
+            while (running.get()) {
+                val line = pollLogTail()
+                if (!line.isNullOrBlank()) {
+                    MAIN.post {
+                        val d = data ?: return@post
+                        if (d.isRunning && running.get()) summary.text = line.take(120)
+                    }
+                }
+                try { Thread.sleep(2_000) } catch (e: InterruptedException) { break }
+            }
+        }
+        poller.isDaemon = true
+        poller.start()
         summary.text = context.getString(R.string.home_root_starting)
         EXECUTOR.execute {
             var tail: String? = null
@@ -205,6 +222,21 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
             }
         }
         return output.toString().lineSequence().lastOrNull { it.isNotBlank() }
+    }
+
+    /** Живой прогресс: последняя строка лога через короткий adb-сеанс (~0.5с). */
+    private fun pollLogTail(): String? = try {
+        val key = AdbKey(PreferenceAdbKeyStore(ShizukuSettings.getPreferences()), "shizuku")
+        AdbClient(ADB_HOST, ADB_PORT, key, 8_000).use { client ->
+            client.connect()
+            val sb = StringBuilder()
+            client.shellCommand("tail -1 /data/local/tmp/root_run.log 2>/dev/null") { chunk ->
+                sb.append(String(chunk))
+            }
+            sb.toString().trim().ifBlank { null }
+        }
+    } catch (e: Throwable) {
+        null
     }
 
     /** Живой прогресс: последняя строка вывода → summary (троттлинг). */
