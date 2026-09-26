@@ -130,6 +130,13 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
             }
             return
         }
+        // GPU оседает ~90с после бута: ранний тап = скан по переходному
+        // состоянию KGSL → клинч (26.09: тап на uptime 48с — 6 мин ретраев).
+        if (now < 90_000L) {
+            summary.text = context.getString(R.string.home_root_boot_wait)
+            summary.setTextColor(context.getColor(R.color.home_root_status_error))
+            return
+        }
         prefs.edit().putLong(PREF_LAST_RUN, now).apply()
 
         summary.text = context.getString(R.string.home_root_starting)
