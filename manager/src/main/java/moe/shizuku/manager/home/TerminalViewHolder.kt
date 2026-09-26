@@ -7,6 +7,10 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import moe.shizuku.manager.R
+import moe.shizuku.manager.ShizukuSettings
+import moe.shizuku.manager.adb.AdbClient
+import moe.shizuku.manager.adb.AdbKey
+import moe.shizuku.manager.adb.PreferenceAdbKeyStore
 import moe.shizuku.manager.databinding.HomeItemContainerBinding
 import moe.shizuku.manager.databinding.HomeTerminalBinding
 import moe.shizuku.manager.model.ServiceStatus
@@ -21,14 +25,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Карточка «Получить рут (KernelSU)» на месте бывшей карточки терминала.
  *
- * Клик запускает /data/local/tmp/restore.sh через Shizuku-сервер (uid 2000);
- * менеджер пропускается сервером без разрешений (см. ShizukuService.checkCallerPermission:
- * appId == managerAppId). Статус отражает модуль kernelsu в /proc/modules:
- * зелёный — рут активен, красный — выключен, оранжевый — сервис недоступен.
+ * Запуск идёт в два пути:
+ *  1. Быстрый (~20 с): restore.sh исполняет adbd через собственный [AdbClient]
+ *     приложения — тот же механизм, что и silent start (StarterService.startAdb).
+ *     adbd — ранний потомок init, walk в cheese короткий (~24 RPC против
+ *     ~410 RPC через newProcess сервера). Живой вывод лога идёт в summary.
+ *  2. Запасной (~2 мин): IShizukuService.newProcess — если adb-канал недоступен.
  *
- * Все binder-вызовы выполняются на одном фоновом daemon-потоке, создающемся
- * лениво при первой задаче: карточка не выполняет никакой работы при старте
- * приложения и не влияет на скорость запуска Shizuku.
+ * Статус: зелёный — kernelsu в /proc/modules; красный — выключен; оранжевый —
+ * сервис недоступен. При uptime ≥ 3 ч подсказка «сначала перезагрузи» (GPU-
+ * состояние уезжает, скан не находит паттерн — 26.09).
+ *
+ * Все сетевые/binder-операции — на одном ленивом daemon-потоке; карточка не
+ * выполняет работы при старте приложения и не влияет на скорость запуска.
  */
 class TerminalViewHolder(private val binding: HomeTerminalBinding, private val root: View) :
     BaseViewHolder<ServiceStatus>(root),
@@ -42,6 +51,16 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
 
         private val CMD_CHECK = arrayOf("sh", "-c", "grep -q '^kernelsu' /proc/modules")
         private val CMD_START = arrayOf("sh", "/data/local/tmp/restore.sh")
+
+        /** 127.0.0.1:5555 — локальный adbd, авторизован ключом приложения. */
+        private const val ADB_HOST = "127.0.0.1"
+        private const val ADB_PORT = 5555
+
+        /**
+         * Бюджет чтения adb-канала: покрывает молчаливые фазы прогона (walk
+         * ~15 с, 6×sleep(1)) и ограничивает зависший handshake сверху.
+         */
+        private const val ADB_READ_TIMEOUT_MS = 30_000
 
         private const val ROOT_ACTIVE = 0
         private const val ROOT_INACTIVE = 1
@@ -60,6 +79,7 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
 
     private val running = AtomicBoolean(false)
     private var defaultSummaryColor: Int? = null
+    private var lastProgressPostMs = 0L
 
     private inline val summary get() = binding.text2
 
@@ -86,21 +106,32 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         if (!running.compareAndSet(false, true)) return
         summary.text = itemView.context.getString(R.string.home_root_starting)
         EXECUTOR.execute {
-            // exit: код возврата restore.sh/root.sh; -100 = процесс вообще не запустился.
-            val exit = try {
-                startRoot()
+            var tail: String? = null      // последняя строка живого вывода (adb-путь)
+            var serverExit = 0            // код возврата запасного пути (0 = не использовался)
+            try {
+                tail = startViaAdb()
             } catch (e: Throwable) {
-                -100
+                // adb-канал не ответил — медленный, но рабочий путь через сервер.
+                MAIN.post {
+                    if (data?.isRunning == true) {
+                        summary.text = itemView.context.getString(R.string.home_root_starting_slow)
+                    }
+                }
+                try {
+                    serverExit = startViaServer()
+                } catch (ignored: Throwable) {
+                    serverExit = -100
+                }
             }
             val status = queryRootStatus()
             MAIN.post {
                 running.set(false)
-                if (status == ROOT_ACTIVE) {
-                    applyStatus(status)
-                } else if (exit != 0 && exit != -100) {
-                    applyFailure(exit)
-                } else {
-                    applyStatus(status)
+                applyStatus(status)
+                if (status != ROOT_ACTIVE) {
+                    when {
+                        !tail.isNullOrBlank() -> summary.text = tail.take(120)
+                        serverExit > 0 -> applyFailure(serverExit)
+                    }
                 }
             }
         }
@@ -113,6 +144,61 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         }
     }
 
+    /**
+     * Быстрый путь: adb-клиент приложения (как silent start). Возвращает
+     * последнюю непустую строку вывода — она же причина, если прогон провалился.
+     *
+     * Таймаут чтения НЕ считается ошибкой: прогон на устройстве, скорее всего,
+     * продолжается (walk молчит ~15 с, при троттле дольше) — поллим модуль
+     * 90 с и не перезапускаем, чтобы не устроить два конкурирующих cheese.
+     */
+    private fun startViaAdb(): String? {
+        val output = StringBuilder()
+        try {
+            val key = AdbKey(PreferenceAdbKeyStore(ShizukuSettings.getPreferences()), "shizuku")
+            AdbClient(ADB_HOST, ADB_PORT, key, ADB_READ_TIMEOUT_MS).use { client ->
+                client.connect()
+                client.shellCommand(CMD_START.joinToString(" ")) { chunk ->
+                    output.append(String(chunk))
+                    showProgress(output)
+                }
+            }
+        } catch (e: java.net.SocketTimeoutException) {
+            pollRootStatus(90_000)
+        }
+        return output.toString().lineSequence().lastOrNull { it.isNotBlank() }
+    }
+
+    /** Ожидание появления модуля (после таймаута чтения adb). */
+    private fun pollRootStatus(timeoutMs: Long) {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (queryRootStatus() == ROOT_ACTIVE) return
+            Thread.sleep(3_000)
+        }
+    }
+
+    /** Живой прогресс: последняя строка лога → summary, троттлинг ~0.7 с. */
+    private fun showProgress(output: StringBuilder) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastProgressPostMs < 700) return
+        lastProgressPostMs = now
+        val line = output.toString().lineSequence().lastOrNull { it.isNotBlank() } ?: return
+        MAIN.post {
+            val d = data ?: return@post
+            if (d.isRunning) summary.text = line.take(120)
+        }
+    }
+
+    /** Запасной путь: newProcess через Shizuku-сервер (uid 2000, ~2 мин). */
+    private fun startViaServer(): Int {
+        val binder = Shizuku.getBinder()
+            ?: throw IllegalStateException("Shizuku service is not running")
+        if (!binder.pingBinder()) throw IllegalStateException("Shizuku binder is dead")
+        val service = IShizukuService.Stub.asInterface(binder)
+        return service.newProcess(CMD_START, null, null).waitFor()
+    }
+
     private fun applyStatus(status: Int) {
         val d = data ?: return
         if (!d.isRunning) return
@@ -123,8 +209,6 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
                 summary.setTextColor(context.getColor(R.color.home_root_status_ok))
             }
             ROOT_INACTIVE -> {
-                // 26.09: все провалы рута были при uptime > 3 ч (GPU-состояние уезжает,
-                // скан не находит паттерн). Подсказываем ребут до запуска.
                 val upHours = (SystemClock.elapsedRealtime() / 3_600_000L).toInt()
                 summary.text = if (upHours >= 3) {
                     context.getString(R.string.home_root_inactive_old, upHours)
@@ -141,8 +225,8 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
     }
 
     /**
-     * Диагностика провала: код возврата root.sh (1=cheese/GPU, 2=insmod,
-     * 3=kbase, 5=файлы, 6=slide, 7=слот, 8=ядро) + универсальное лечение.
+     * Диагностика провала запасного пути: код возврата root.sh
+     * (1=cheese/GPU, 2=insmod, 3=kbase, 5=файлы, 6=slide, 7=слот, 8=ядро).
      */
     private fun applyFailure(exit: Int) {
         val d = data ?: return
@@ -162,13 +246,5 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         } catch (e: Throwable) {
             SERVICE_ERROR
         }
-    }
-
-    private fun startRoot(): Int {
-        val binder = Shizuku.getBinder()
-            ?: throw IllegalStateException("Shizuku service is not running")
-        if (!binder.pingBinder()) throw IllegalStateException("Shizuku binder is dead")
-        val service = IShizukuService.Stub.asInterface(binder)
-        return service.newProcess(CMD_START, null, null).waitFor()
     }
 }

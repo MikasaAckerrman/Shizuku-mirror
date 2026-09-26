@@ -89,6 +89,7 @@
     <string name="home_root_active">Root is active (KernelSU)</string>
     <string name="home_root_inactive">Root is off — tap to start</string>
     <string name="home_root_starting">Starting root… (~20 s)</string>
+    <string name="home_root_starting_slow">Starting root… slow path, up to ~2 min</string>
     <string name="home_root_error">Shizuku service unavailable</string>
     <string name="home_root_inactive_old">Root is off. Device has been up %1$d h — reboot first</string>
     <string name="home_root_fail">Failed (code %1$d). Fix: reboot + charge above 20%%. Log: /data/local/tmp/root_run.log</string>
