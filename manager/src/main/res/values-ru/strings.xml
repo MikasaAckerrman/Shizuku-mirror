@@ -105,6 +105,8 @@
     <string name="home_root_inactive">Рут выключен — нажмите для запуска</string>
     <string name="home_root_starting">Запуск рута… (~20 с)</string>
     <string name="home_root_error">Сервис Shizuku недоступен</string>
+    <string name="home_root_inactive_old">Рут выключен. Устройство %1$d ч без ребута — сначала перезагрузи</string>
+    <string name="home_root_fail">Провал (код %1$d). Лечение: ребут + заряд больше 20%%. Лог: /data/local/tmp/root_run.log</string>
     <string name="home_wireless_adb_description">На Android 11 или выше Вы можете включить отладку по Wi-Fi без дополнительного ПО, без подключения к компьютеру. Пожалуйста, сперва просмотрите инструкцию</string>
     <string name="adb_pairing_tutorial_content_miui">На оболочке MIUI может потребоваться сменить параметр в пункте системных настроек «Уведомления» – «Стиль уведомлений» на «Android».</string>
     <string name="adb_pairing_tutorial_content_steps">Перейдите в «Параметры разработчика» – «Отладка по Wi-Fi». Нажмите на «Сопряжение устройства с помощью кода сопряжения» и увидите шестизначный код.</string>

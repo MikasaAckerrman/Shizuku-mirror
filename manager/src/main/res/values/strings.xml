@@ -90,6 +90,8 @@
     <string name="home_root_inactive">Root is off — tap to start</string>
     <string name="home_root_starting">Starting root… (~20 s)</string>
     <string name="home_root_error">Shizuku service unavailable</string>
+    <string name="home_root_inactive_old">Root is off. Device has been up %1$d h — reboot first</string>
+    <string name="home_root_fail">Failed (code %1$d). Fix: reboot + charge above 20%%. Log: /data/local/tmp/root_run.log</string>
     <string name="terminal_tutorial_1">First, Export files to any where you want. You will find two files, %1$s and %2$s.</string>
     <string name="terminal_tutorial_1_description">If there are files with the same name in the selected folder, they will be deleted.\n\nThe export function uses SAF (Storage Access Framework). It\'s reported that MIUI breaks the functions of SAF. If you are using MIUI, you may have to extract the file from Shizuku\'s apk or download from GitHub.</string>
     <string name="terminal_export_files">Export files</string>

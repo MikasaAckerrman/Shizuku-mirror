@@ -35,6 +35,13 @@ jobs:
           openssl pkcs12 -export -legacy -inkey /tmp/ks.key -in /tmp/ks.crt \
             -name shizukuplus -passout pass:"$KS_PW" -out shizuku-release.p12
           echo "$ADBKEY_B64" | base64 -d > manager/src/main/assets/adbkey.der
+          # 26.09: секрет MINIS_ADBKEY_DER_B64 — двойной base64 (декод в base64-текст 45Б):
+          # инъекция калечила рабочий git-ключ 1218Б → silent start умирал.
+          # Fallback: если декод дал <100Б — откат на версию из git.
+          if [ "$(stat -c %s manager/src/main/assets/adbkey.der)" -lt 100 ]; then
+            echo "::warning::adbkey secret is broken (double-base64?), using git version"
+            git checkout -- manager/src/main/assets/adbkey.der
+          fi
           {
             echo "KEYSTORE_FILE=$PWD/shizuku-release.p12"
             echo "KEYSTORE_PASSWORD=$KS_PW"

@@ -2,6 +2,7 @@ package moe.shizuku.manager.home
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -80,19 +81,25 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
     }
 
     override fun onClick(v: View) {
-        if (!data.isRunning) return
+        val d = data ?: return
+        if (!d.isRunning) return
         if (!running.compareAndSet(false, true)) return
         summary.text = itemView.context.getString(R.string.home_root_starting)
         EXECUTOR.execute {
-            try {
+            // exit: код возврата restore.sh/root.sh; -100 = процесс вообще не запустился.
+            val exit = try {
                 startRoot()
             } catch (e: Throwable) {
-                // Процесс не запустился или сервер умер — итоговый статус
-                // покажет queryRootStatus() ниже.
-            } finally {
-                val status = queryRootStatus()
-                MAIN.post {
-                    running.set(false)
+                -100
+            }
+            val status = queryRootStatus()
+            MAIN.post {
+                running.set(false)
+                if (status == ROOT_ACTIVE) {
+                    applyStatus(status)
+                } else if (exit != 0 && exit != -100) {
+                    applyFailure(exit)
+                } else {
                     applyStatus(status)
                 }
             }
@@ -116,7 +123,14 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
                 summary.setTextColor(context.getColor(R.color.home_root_status_ok))
             }
             ROOT_INACTIVE -> {
-                summary.text = context.getString(R.string.home_root_inactive)
+                // 26.09: все провалы рута были при uptime > 3 ч (GPU-состояние уезжает,
+                // скан не находит паттерн). Подсказываем ребут до запуска.
+                val upHours = (SystemClock.elapsedRealtime() / 3_600_000L).toInt()
+                summary.text = if (upHours >= 3) {
+                    context.getString(R.string.home_root_inactive_old, upHours)
+                } else {
+                    context.getString(R.string.home_root_inactive)
+                }
                 summary.setTextColor(context.getColor(R.color.home_root_status_off))
             }
             else -> {
@@ -124,6 +138,18 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
                 summary.setTextColor(context.getColor(R.color.home_root_status_error))
             }
         }
+    }
+
+    /**
+     * Диагностика провала: код возврата root.sh (1=cheese/GPU, 2=insmod,
+     * 3=kbase, 5=файлы, 6=slide, 7=слот, 8=ядро) + универсальное лечение.
+     */
+    private fun applyFailure(exit: Int) {
+        val d = data ?: return
+        if (!d.isRunning) return
+        val context = itemView.context
+        summary.text = context.getString(R.string.home_root_fail, exit)
+        summary.setTextColor(context.getColor(R.color.home_root_status_error))
     }
 
     private fun queryRootStatus(): Int {
@@ -138,11 +164,11 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         }
     }
 
-    private fun startRoot() {
+    private fun startRoot(): Int {
         val binder = Shizuku.getBinder()
             ?: throw IllegalStateException("Shizuku service is not running")
         if (!binder.pingBinder()) throw IllegalStateException("Shizuku binder is dead")
         val service = IShizukuService.Stub.asInterface(binder)
-        service.newProcess(CMD_START, null, null).waitFor()
+        return service.newProcess(CMD_START, null, null).waitFor()
     }
 }
