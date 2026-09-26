@@ -151,6 +151,9 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
                 .apply()
         }
 
+        // v3 (r1156): экран не гаснет весь прогон — погасший экран = GPU в idle =
+        // латентность RPC взлетает (замер 26.09: 1.1с/батч @231МГц vs 0.4с @578)
+        itemView.keepScreenOn = true
         summary.text = context.getString(R.string.home_root_starting)
         EXECUTOR.execute {
             var tail: String? = null
@@ -173,6 +176,7 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
             val status = queryRootStatus()
             MAIN.post {
                 running.set(false)
+                itemView.keepScreenOn = false   // v3: гашение экрана только по системному таймауту
                 applyStatus(status)
                 if (status != ROOT_ACTIVE) {
                     when {
