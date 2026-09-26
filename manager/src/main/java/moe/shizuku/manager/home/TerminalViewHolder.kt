@@ -68,6 +68,7 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         private const val SERVICE_ERROR = -1
         private const val PREFS = "root_button"
         private const val PREF_LAST_RUN = "last_run_elapsed"
+        private const val PREF_BOOT_ID = "boot_id"
 
         val CREATOR = Creator<ServiceStatus> { inflater: LayoutInflater, parent: ViewGroup? ->
             val outer = HomeItemContainerBinding.inflate(inflater, parent, false)
@@ -109,12 +110,17 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         if (!running.compareAndSet(false, true)) return
 
         val context = itemView.context
-        // Гвард «один прогон за бут»: elapsedRealtime сбрасывается при ребуте,
-        // сохранённая метка в 1..now означает «прогон уже был на этой загрузке».
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val lastRun = prefs.getLong(PREF_LAST_RUN, 0L)
-        val now = SystemClock.elapsedRealtime()
-        if (lastRun in 1..now) {
+        // Гвард «один прогон за бут»: boot_id (/proc/sys/kernel/random/boot_id) —
+        // UUID меняется на каждый ребут. НЕ elapsedRealtime: счётчик обнуляется
+        // при ребуте и через N минут снова превосходит старое значение —
+        // межбутовое сравнение ложно (баг r1154: ложный «ребутни» после ребута).
+        val bootId = runCatching {
+            java.io.File("/proc/sys/kernel/random/boot_id").bufferedReader().use { it.readLine()?.trim() }
+        }.getOrNull()
+        val storedBootId = runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PREF_BOOT_ID, null)
+        }.getOrNull()
+        if (bootId != null && bootId == storedBootId) {
             // Прогон на этой загрузке уже был. Если рут жив — показать статус,
             // нет — честно требовать ребут вместо гарантированного клинча.
             EXECUTOR.execute {
@@ -132,12 +138,18 @@ class TerminalViewHolder(private val binding: HomeTerminalBinding, private val r
         }
         // GPU оседает ~90с после бута: ранний тап = скан по переходному
         // состоянию KGSL → клинч (26.09: тап на uptime 48с — 6 мин ретраев).
+        val now = SystemClock.elapsedRealtime()
         if (now < 90_000L) {
             summary.text = context.getString(R.string.home_root_boot_wait)
             summary.setTextColor(context.getColor(R.color.home_root_status_error))
             return
         }
-        prefs.edit().putLong(PREF_LAST_RUN, now).apply()
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(PREF_BOOT_ID, bootId)
+                .putLong(PREF_LAST_RUN, now)
+                .apply()
+        }
 
         summary.text = context.getString(R.string.home_root_starting)
         EXECUTOR.execute {

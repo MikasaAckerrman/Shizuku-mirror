@@ -90,7 +90,7 @@
     <string name="home_root_inactive">Root is off — tap to start</string>
     <string name="home_root_starting">Starting root… (~20 s)</string>
     <string name="home_root_starting_slow">Starting root… slow path, up to ~2 min</string>
-    <string name="home_root_cooldown">Root already attempted this boot — reboot the device first</string>
+    <string name="home_root_cooldown">Root was already attempted on this boot. Reboot the device and try again</string>
     <string name="home_root_boot_wait">Device just booted — wait ~1 min for GPU to settle</string>
     <string name="home_root_error">Shizuku service unavailable</string>
     <string name="home_root_inactive_old">Root is off. Device has been up %1$d h — reboot first</string>

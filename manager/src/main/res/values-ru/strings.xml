@@ -105,7 +105,7 @@
     <string name="home_root_inactive">Рут выключен — нажмите для запуска</string>
     <string name="home_root_starting">Запуск рута… (~20 с)</string>
     <string name="home_root_starting_slow">Запуск рута… медленный путь, до ~2 мин</string>
-    <string name="home_root_cooldown">Прогон уже был после этой загрузки — сначала перезагрузи устройство</string>
+    <string name="home_root_cooldown">Рут уже запускался на этой загрузке. Перезагрузи устройство и попробуй снова</string>
     <string name="home_root_boot_wait">Устройство только загрузилось — подожди ~1 мин (GPU не осел после старта)</string>
     <string name="home_root_error">Сервис Shizuku недоступен</string>
     <string name="home_root_inactive_old">Рут выключен. Устройство %1$d ч без ребута — сначала перезагрузи</string>
