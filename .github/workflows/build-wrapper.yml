@@ -7,6 +7,8 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (с сабмодулями — api/ нужен root-скрипту)
@@ -26,8 +28,10 @@ jobs:
       - name: Build wrapper APK (release)
         run: ./gradlew -p wrapper assembleRelease --no-daemon -q
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ownroot-wrapper
-          path: wrapper/build/outputs/apk/release/*.apk
+      - name: Upload release asset (артефакт-квота исчерпана)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: wrapper-${{ github.run_number }}
+        run: |
+          APK=$(ls wrapper/build/outputs/apk/release/*.apk | head -1)
+          gh release create "$TAG" "$APK" --title "ownroot wrapper build ${{ github.run_number }}" --notes "autobuild feat/root-wrapper" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
