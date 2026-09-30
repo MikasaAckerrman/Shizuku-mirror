@@ -32,7 +32,7 @@ class MainActivity : Activity() {
         private const val ADB_HOST = "127.0.0.1"
         private const val ADB_PORT = 5555
         private const val CMD_RUN = "sh /data/local/tmp/restore.sh"
-        private const val CMD_CHECK = "sh -c 'grep -q ^kernelsu /proc/modules && echo R1 || echo R0'"
+        private const val CMD_CHECK = "sh -c 'grep -q ^kernelsu /proc/modules && echo R1 || (ls -d /sys/module/kernelsu >/dev/null 2>&1 && echo R1 || echo R0)'"
         private const val COLOR_OK = 0xFF2E7D32.toInt()
         private const val COLOR_FAIL = 0xFFC62828.toInt()
     }
@@ -108,12 +108,16 @@ class MainActivity : Activity() {
         main.post { showStatus(ok) }
     }.start()
 
-    private fun showStatus(ok: Boolean) {
-        status.text = if (ok) "✓ Рут активен (KernelSU)" else "Рут не активен"
-        status.setTextColor(if (ok) COLOR_OK else COLOR_FAIL)
+    private fun showStatus(ok: Boolean?) {
+        when (ok) {
+            true -> { status.text = "✓ Рут активен (KernelSU)"; status.setTextColor(COLOR_OK) }
+            false -> { status.text = "Рут не активен"; status.setTextColor(COLOR_FAIL) }
+            null -> { status.text = "✗ adbd не отвечает — поднять adb (5555)"; status.setTextColor(COLOR_FAIL) }
+        }
     }
 
-    private fun checkRooted(): Boolean = try {
+    /** null = adbd недоступен (не путать с «проверили — рута нет»). */
+    private fun checkRooted(): Boolean? = try {
         AdbClient(ADB_HOST, ADB_PORT, key(), 10_000).use { c ->
             c.connect()
             val sb = StringBuilder()
@@ -121,7 +125,7 @@ class MainActivity : Activity() {
             sb.toString().contains("R1")
         }
     } catch (e: Throwable) {
-        false
+        null
     }
 
     private fun launch() {
@@ -130,6 +134,7 @@ class MainActivity : Activity() {
         progress.text = ""
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Thread {
+            var fail: String? = null
             try {
                 val sb = StringBuilder()
                 AdbClient(ADB_HOST, ADB_PORT, key(), 600_000).use { c ->
@@ -145,16 +150,29 @@ class MainActivity : Activity() {
                         }
                     }
                 }
-            } catch (ignored: Throwable) {
-                // соединение оборвалось — финальный статус скажет правду
+            } catch (e: Throwable) {
+                fail = "✗ Ошибка запуска: ${e.message ?: e.javaClass.simpleName}"
             }
             val ok = checkRooted()
+            val reason = if (ok == false) tailLog() else null
             main.post {
                 running.set(false)
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 showStatus(ok)
-                if (!ok) progress.text = "Не получен. Лог: /data/local/tmp/root_run.log"
+                progress.text = fail ?: reason ?: (if (ok == true) "✓ Готово за этот прогон" else "")
             }
         }.start()
+    }
+
+    /** Хвост root_run.log — причина отказа (батарея/стадия) видна прямо в приложении. */
+    private fun tailLog(): String = try {
+        AdbClient(ADB_HOST, ADB_PORT, key(), 10_000).use { c ->
+            c.connect()
+            val sb = StringBuilder()
+            c.shellCommand("tail -n 2 /data/local/tmp/root_run.log") { sb.append(String(it)) }
+            sb.toString().trim().take(300).ifEmpty { "Не получен. Лог: /data/local/tmp/root_run.log" }
+        }
+    } catch (e: Throwable) {
+        "Не получен. Лог: /data/local/tmp/root_run.log"
     }
 }
