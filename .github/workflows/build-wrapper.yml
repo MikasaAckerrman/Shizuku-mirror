@@ -24,7 +24,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build wrapper APK (release)
-        run: ./gradlew :wrapper:assembleRelease --no-daemon -q
+        run: ./gradlew -p wrapper assembleRelease --no-daemon -q
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
