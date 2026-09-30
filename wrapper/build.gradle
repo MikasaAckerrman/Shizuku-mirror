@@ -28,6 +28,15 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    packagingOptions {
+        resources {
+            excludes += 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'
+            excludes += 'META-INF/OSGI-INF/MANIFEST.MF'
+            excludes += 'META-INF/*.SF'
+            excludes += 'META-INF/*.DSA'
+            excludes += 'META-INF/*.RSA'
+        }
+    }
 }
 
 // Ноль внешних зависимостей: adb-ядро и UI — собственные исходники.
