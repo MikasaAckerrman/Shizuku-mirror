@@ -14,7 +14,6 @@ import com.ownroot.wrapper.adb.AdbProtocol.A_STLS
 import com.ownroot.wrapper.adb.AdbProtocol.A_STLS_VERSION
 import com.ownroot.wrapper.adb.AdbProtocol.A_VERSION
 import com.ownroot.wrapper.adb.AdbProtocol.A_WRTE
-import android.util.Log
 import android.os.Build
 import java.io.Closeable
 import java.io.DataInputStream
@@ -74,7 +73,7 @@ class AdbClient(
 
         var message = read()
         if (message.command == A_STLS) {
-            if (!BuildUtils.atLeast29) {
+            if (Build.VERSION.SDK_INT < 29) {
                 error("Connect to adb with TLS is not supported before Android 9")
             }
             write(A_STLS, A_STLS_VERSION, 0)

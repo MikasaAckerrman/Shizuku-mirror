@@ -32,4 +32,5 @@ android {
 
 // Ноль внешних зависимостей: adb-ядро и UI — собственные исходники.
 dependencies {
+    implementation 'org.bouncycastle:bcpkix-jdk18on:1.80'
 }
