@@ -41,6 +41,7 @@ dependencyResolutionManagement {
 }
 
 include ':server', ':starter', ':shell'
+include ':wrapper'
 include ':manager'
 include ':common'
 

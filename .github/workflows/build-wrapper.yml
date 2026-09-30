@@ -1,0 +1,31 @@
+name: Build Wrapper
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ feat/root-wrapper ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build wrapper APK (release)
+        run: ./gradlew :wrapper:assembleRelease --no-daemon -q
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ownroot-wrapper
+          path: wrapper/build/outputs/apk/release/*.apk
