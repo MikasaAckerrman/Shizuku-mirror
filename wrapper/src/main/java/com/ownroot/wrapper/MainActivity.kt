@@ -81,8 +81,9 @@ class MainActivity : Activity() {
         refreshStatus()
     }
 
-    /** Ключ: первый запуск импортирует пред-авторизованный PKCS#8 из assets в prefs. */
+    /** Ключ: AdbKey сам читает assets/adbkey.der (авторизован на этом adbd). */
     private fun key(): AdbKey {
+        AdbKey.appContext = applicationContext
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val store = object : AdbKeyStore {
             override fun put(bytes: ByteArray) {
@@ -95,10 +96,6 @@ class MainActivity : Activity() {
             override fun get(): ByteArray? =
                 prefs.getString("k", null)
                     ?.let { android.util.Base64.decode(it, android.util.Base64.NO_WRAP) }
-        }
-        if (store.get() == null) {
-            val der = assets.open("adbkey.pkcs8").use { it.readBytes() }
-            store.put(der)
         }
         return AdbKey(store, "ownroot")
     }
