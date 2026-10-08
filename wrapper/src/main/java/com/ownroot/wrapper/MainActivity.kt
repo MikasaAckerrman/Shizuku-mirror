@@ -33,6 +33,7 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
 
     companion object {
+        private const val TAG = "ownroot"
         private const val T = "/data/local/tmp"
         private const val HOST = "127.0.0.1"
         private const val PORT = 5555
@@ -166,9 +167,30 @@ class MainActivity : Activity() {
      * Возвращает (rc, stdout+stderr) или null при недоступности транспорта.
      * stdin пишется только через Shizuku (binder-process).
      */
+    /**
+     * exec с двумя транспортами. ГЛАВНЫЙ = AdbClient (127.0.0.1:5555, ключ из assets
+     * авторизован в adb_keys) — чистый TCP+ADB-протокол, без binder-стримов
+     * (стримы IRemoteProcess ни разу не работали: 01:28 зависание записи stdin,
+     * 01:4x-02:1x пустой вывод — фора: Shizuku остаётся запасным).
+     * Каждая неудача логируется — больше никаких молчаливых null.
+     */
     private fun exec(cmd: String, stdin: ByteArray? = null, timeoutSec: Int = 90): Pair<Int, String>? {
+        // 1) AdbClient — основной транспорт
+        if (stdin == null) {
+            try {
+                AdbClient(HOST, PORT, key, readTimeoutMs = timeoutSec * 1000 + 15_000).use { c ->
+                    val sb = StringBuilder()
+                    c.shellCommand(cmd) { chunk -> sb.append(chunk) }
+                    return 0 to sb.toString()
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "exec(adb) failed: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(60)}]")
+                progress("⚠ adb: ${e.javaClass.simpleName} ${e.message?.take(80)}")
+            }
+        }
+        // 2) Shizuku newProcess — запасной (стримы исторически ненадёжны)
         if (shizukuReady() && shizukuPermitted()) {
-            return try {
+            try {
                 val p = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, T)
                 val out = StringBuilder()
                 val r1 = thread(name = "exec-out") {
@@ -185,23 +207,21 @@ class MainActivity : Activity() {
                 // ненадёжен (инцидент 01:28 — зависание записи/исключение на пустом open).
                 if (stdin != null) p.outputStream.use { os -> os.write(stdin) }
                 val done = p.waitFor(timeoutSec.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-                if (!done) {
+                return if (!done) {
                     runCatching { p.destroy() }
                     124 to synchronized(out) { out.toString() }
                 } else {
                     r1.join(3000); r2.join(3000)
                     p.exitValue() to synchronized(out) { out.toString() }
                 }
-            } catch (_: Throwable) { null }
-        }
-        if (stdin != null) return null // AdbClient не поддерживает stdin
-        return try {
-            AdbClient(HOST, PORT, key).use { c ->
-                val sb = StringBuilder()
-                c.shellCommand(cmd) { chunk -> sb.append(chunk) }
-                0 to sb.toString()
+            } catch (e: Throwable) {
+                Log.w(TAG, "exec(shizuku) failed: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(60)}]")
+                progress("⚠ shizuku: ${e.javaClass.simpleName} ${e.message?.take(80)}")
             }
-        } catch (_: Throwable) { null }
+        } else {
+            Log.d(TAG, "exec: shizuku not ready/permitted, transport=adb only")
+        }
+        return null
     }
 
     private val key by lazy {
@@ -239,47 +259,39 @@ class MainActivity : Activity() {
             return
         }
 
-        // --- выбор транспорта ---
-        val viaShizuku: Boolean
-        if (shizukuReady()) {
-            if (!shizukuPermitted()) {
+        // --- транспорт: adb-основной, Shizuku запасной ---
+        val probe = exec("echo K")
+        if (probe?.second?.contains("K") != true) {
+            if (shizukuReady() && !shizukuPermitted()) {
                 status("Нужно разрешение Shizuku")
                 time("диалог открыт — разреши, запуск продолжится сам")
                 try { Shizuku.requestPermission(REQUEST_SHIZUKU) } catch (_: Throwable) {}
                 return
             }
-            viaShizuku = true
-        } else {
-            viaShizuku = false
-            val probe = exec("ls $T/oneclick.sh >/dev/null 2>&1 && echo K")
-            if (probe?.second?.contains("K") != true) {
-                status("✗ Нет канала: Shizuku не запущен, adb 5555 недоступен")
-                time("подними Shizuku (Start Shizuku) и нажми снова")
-                return
-            }
+            status("✗ Нет канала: adb 5555 недоступен и Shizuku не отвечает")
+            time("подними adbd (Start Shizuku в Shizuku-приложении поднимает 5555) и нажми снова")
+            return
         }
 
-        // --- развёртка кита (только через Shizuku, ~42МБ) ---
-        if (viaShizuku) {
-            status("Развёртка кита (15 файлов)…")
-            val dep = deployKit()
-            if (dep != null) {
-                status("✗ Развёртка не удалась: $dep")
-                time("см. лог выше")
-                return
-            }
+        // --- развёртка кита (любой транспорт, ~42МБ при первом запуске) ---
+        status("Развёртка кита (15 файлов)…")
+        val dep = deployKit()
+        if (dep != null) {
+            status("✗ Развёртка не удалась: $dep")
+            time("см. лог выше")
+            return
         }
 
         // --- oneclick: запуск, НИКОГДА не убиваем ---
         status("Эксплойт: cheese → модуль (до 3 попыток × 300с)")
         time("старт " + java.text.SimpleDateFormat("HH:mm:ss").format(java.util.Date()))
-        val exit = runOneclick(viaShizuku)
+        val exit = runOneclick()
         val secs = (SystemClock.elapsedRealtime() - t0) / 1000
 
         // --- верификация ---
         if (checkRooted()) {
             status("✓ Рут активен (KernelSU) · за ${secs}с")
-            time("канал: ${if (viaShizuku) "Shizuku" else "adb"} · oneclick exit=$exit")
+            time("канал: adb/Shizuku · oneclick exit=$exit")
             healAdbKeys()
         } else {
             status("✗ Рут не встал (exit=$exit, ${secs}с)")
@@ -335,9 +347,31 @@ class MainActivity : Activity() {
             .mapNotNull { l -> l.split("  ", limit = 2).takeIf { it.size == 2 } }
             .associate { (h, f) -> f.trim() to h.trim() }
 
-    /** Запуск oneclick.sh с потоковым выводом. Возвращает exit-код (или -1). */
-    private fun runOneclick(viaShizuku: Boolean): Int {
-        if (viaShizuku) {
+    /** Запуск oneclick.sh с потоковым выводом. Возвращает exit-код (или -1).
+     *  AdbClient — основной (стрим-колбэк, проверенный транспорт), Shizuku — запасной. */
+    private fun runOneclick(): Int {
+        // 1) adb — основной путь (молчание cheese-скана длится минуты: таймаут чтения 30 мин)
+        try {
+            AdbClient(HOST, PORT, key, readTimeoutMs = 1_800_000).use { c ->
+                val sb = StringBuilder()
+                c.shellCommand("sh $T/oneclick.sh 2>&1") { chunk ->
+                    val s = String(chunk, Charsets.UTF_8)
+                    synchronized(sb) { sb.append(s) }
+                    s.lineSequence().filter { it.isNotBlank() }.forEach { progress(it) }
+                }
+                val tail = synchronized(sb) { sb.toString() }
+                return when {
+                    tail.contains("ALL-DONE") -> 0
+                    tail.contains("не смог") || tail.contains("失败") -> 1
+                    else -> 0 // adb-канал не даёт rc; статус решает верификация
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "runOneclick(adb): ${e.javaClass.simpleName}: ${e.message}")
+            progress("⚠ adb-запуск не удался (${e.javaClass.simpleName}), пробую Shizuku…")
+        }
+        // 2) Shizuku — запасной
+        if (shizukuReady() && shizukuPermitted()) {
             return try {
                 val p = Shizuku.newProcess(arrayOf("sh", "$T/oneclick.sh"), null, T)
                 thread(name = "oneclick-out") {
@@ -349,32 +383,13 @@ class MainActivity : Activity() {
                 p.waitFor() // без таймаута и destroy: бюджет сам ограничен внутри скрипта
                 val rc = p.exitValue()
                 progress("[oneclick] завершён, exit=$rc")
-                rc
+                return rc
             } catch (e: Throwable) {
                 progress("ошибка запуска oneclick: ${e.message}")
-                -1
+                return -1
             }
         }
-        // adb-fallback: поток через AdbClient (живой вывод в progress)
-        return try {
-            AdbClient(HOST, PORT, key).use { c ->
-                val sb = StringBuilder()
-                c.shellCommand("sh $T/oneclick.sh 2>&1") { chunk ->
-                    val s = String(chunk, Charsets.UTF_8)
-                    synchronized(sb) { sb.append(s) }
-                    s.lineSequence().filter { it.isNotBlank() }.forEach { progress(it) }
-                }
-                val tail = synchronized(sb) { sb.toString() }
-                when {
-                    tail.contains("ALL-DONE") -> 0
-                    tail.contains("не смог") || tail.contains("失败") -> 1
-                    else -> 0 // adb-канал не даёт rc; статус решает верификация
-                }
-            }
-        } catch (e: Throwable) {
-            progress("ошибка adb-запуска: ${e.message}")
-            -1
-        }
+        return -1
     }
 
     /** Широкая проверка рута: /sys/module/kernelsu (GKI) ИЛИ /proc/modules. */
