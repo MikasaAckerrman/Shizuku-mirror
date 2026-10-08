@@ -287,35 +287,53 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Развёртка кита из assets с md5-контролем. null = успех, иначе описание сбоя. */
+    /** Развёртка кита. Сначала md5-проверка уже лежащих файлов: кит остаётся между
+     *  запусками (или развёрнут мостом) — при полном совпадении распаковка ПРОПУСКАЕТСЯ.
+     *  (unzip 40МБ через binder-процесс на загруженном телефоне = минуты и таймауты —
+     *  именно это валило деплой при уже идеальном ките; корень, не симптом.) */
     private fun deployKit(): String? {
         val files = (assets.list("kit") ?: emptyArray()).toSet()
         if (files.size < KIT_MD5.size) return "assets/kit неполон (${files.size}/${KIT_MD5.size})"
         for (name in KIT_MD5.keys) if (name !in files) return "нет в assets: $name"
 
-        // Развёртка одним unzip из собственного APK — без stdin-стримов через binder
-        // (стрим-канал IRemoteProcess ненадёжен: зависание записи 2.3МБ, см. инцидент 01:28).
+        val execs = "chmod 755 " + EXECUTABLES.joinToString(" ") { "$T/$it" } + " 2>/dev/null"
+
+        // 1) Кит уже развёрнут? (~2 сек, без binder-тяжёлой распаковки)
+        val got = exec("cd $T && md5sum ${KIT_MD5.keys.joinToString(" ")} 2>/dev/null")
+        if (got != null) {
+            val gotMap = md5Map(got.second)
+            if (KIT_MD5.keys.all { gotMap[it] == KIT_MD5[it] }) {
+                exec(execs)
+                progress("кит уже на месте, md5 ✓ (${KIT_MD5.size} файлов)")
+                return null
+            }
+        }
+
+        // 2) Отсутствует/битый — распаковка из собственного APK (unzip -o перезаписывает)
         val apk = applicationInfo.sourceDir
         val rc = exec(
-            "cd $T && rm -f ${KIT_MD5.keys.joinToString(" ")} && unzip -j -o '$apk' 'assets/kit/*' -d $T 2>&1 | tail -1",
-            timeoutSec = 300
+            "cd $T && unzip -j -o '$apk' 'assets/kit/*' -d $T 2>&1 | tail -1",
+            timeoutSec = 600
         )
         if (rc == null || rc.first != 0) return "unzip не выполнен (rc=${rc?.first} ${rc?.second?.take(120)})"
         progress("распакован кит из APK (${KIT_MD5.size} файлов)")
 
-        exec("chmod 755 " + EXECUTABLES.joinToString(" ") { "$T/$it" } + " 2>/dev/null; echo OK")
-        val got = exec("cd $T && md5sum ${KIT_MD5.keys.joinToString(" ")} 2>&1")
+        exec(execs)
+        val got2 = exec("cd $T && md5sum ${KIT_MD5.keys.joinToString(" ")} 2>&1")
             ?: return "md5-проверка недоступна"
-        val gotMap = got.second.lineSequence()
-            .mapNotNull { l -> l.split("  ", limit = 2).takeIf { it.size == 2 } }
-            .associate { (h, f) -> f.trim() to h.trim() }
+        val gotMap2 = md5Map(got2.second)
         for ((name, md5) in KIT_MD5) {
-            val actual = gotMap[name]
-            if (actual != md5) return "md5 не сходится: $name ($actual ≠ $md5)"
+            if (gotMap2[name] != md5) return "md5 не сходится: $name (${gotMap2[name]} ≠ $md5)"
         }
         progress("кит развёрнут, md5 ✓ (15 файлов)")
         return null
     }
+
+    /** Парсер вывода md5sum: «hash  name» → map. */
+    private fun md5Map(out: String): Map<String, String> =
+        out.lineSequence()
+            .mapNotNull { l -> l.split("  ", limit = 2).takeIf { it.size == 2 } }
+            .associate { (h, f) -> f.trim() to h.trim() }
 
     /** Запуск oneclick.sh с потоковым выводом. Возвращает exit-код (или -1). */
     private fun runOneclick(viaShizuku: Boolean): Int {
