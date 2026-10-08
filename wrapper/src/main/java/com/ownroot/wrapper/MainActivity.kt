@@ -189,7 +189,11 @@ class MainActivity : Activity() {
                 // отдаём что пришло (sb), пустой вывод разберёт вызывающий
                 Log.w(TAG, "exec(adb) close/IO: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(50)}]")
             }
-            if (sb.isNotEmpty()) return 0 to sb.toString()
+            if (sb.isNotEmpty()) {
+                Log.i(TAG, "exec(adb) OK: [${cmd.take(60)}] → ${sb.length} байт: [${sb.toString().take(80)}]")
+                return 0 to sb.toString()
+            }
+            Log.w(TAG, "exec(adb) EMPTY: [${cmd.take(60)}]")
             progress("⚠ adb: нет ответа (${sb.length} байт)")
         }
         // 2) Shizuku newProcess — запасной (стримы исторически ненадёжны)
@@ -213,6 +217,7 @@ class MainActivity : Activity() {
                 val done = p.waitFor(timeoutSec.toLong(), java.util.concurrent.TimeUnit.SECONDS)
                 if (!done) {
                     runCatching { p.destroy() }
+                    Log.w(TAG, "exec(shizuku) TIMEOUT ${timeoutSec}s: [${cmd.take(60)}]")
                     return 124 to synchronized(out) { out.toString() }
                 }
                 r1.join(3000); r2.join(3000)
@@ -224,7 +229,9 @@ class MainActivity : Activity() {
                     if (ev != null) break
                     Thread.sleep(250)
                 }
-                return (ev ?: 0) to synchronized(out) { out.toString() }
+                val res = synchronized(out) { out.toString() }
+                Log.i(TAG, "exec(shizuku) rc=${ev ?: "?"}: [${cmd.take(60)}] → ${res.length} байт: [${res.take(80)}]")
+                return (ev ?: 0) to res
             } catch (e: Throwable) {
                 Log.w(TAG, "exec(shizuku) failed: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(60)}]")
                 progress("⚠ shizuku: ${e.javaClass.simpleName} ${e.message?.take(80)}")
@@ -258,6 +265,7 @@ class MainActivity : Activity() {
 
     private fun flow() {
         val t0 = SystemClock.elapsedRealtime()
+        Log.i(TAG, "flow: СТАРТ")
         synchronized(logTail) { logTail.clear() }
         main.post { progressView.text = "" }
         status("Запуск…")
@@ -325,11 +333,18 @@ class MainActivity : Activity() {
         val got = exec("cd $T && md5sum ${KIT_MD5.keys.joinToString(" ")} 2>/dev/null")
         if (got != null) {
             val gotMap = md5Map(got.second)
-            if (KIT_MD5.keys.all { gotMap[it] == KIT_MD5[it] }) {
+            val matched = KIT_MD5.keys.count { gotMap[it] == KIT_MD5[it] }
+            Log.i(TAG, "deployKit: md5-проверка $matched/${KIT_MD5.size} совпало")
+            if (matched == KIT_MD5.size) {
                 exec(execs)
+                Log.i(TAG, "deployKit: кит на месте — распаковка ПРОПУЩЕНА")
                 progress("кит уже на месте, md5 ✓ (${KIT_MD5.size} файлов)")
                 return null
             }
+            val missing = KIT_MD5.filterKeys { gotMap[it] != KIT_MD5[it] }.keys.joinToString(",")
+            Log.w(TAG, "deployKit: расхождение: $missing")
+        } else {
+            Log.w(TAG, "deployKit: md5-команда не дала вывода — распаковка")
         }
 
         // 2) Отсутствует/битый — распаковка из собственного APK (unzip -o перезаписывает)
@@ -408,8 +423,10 @@ class MainActivity : Activity() {
     /** Широкая проверка рута: /sys/module/kernelsu (GKI) ИЛИ /proc/modules. */
     private fun checkRooted(): Boolean {
         val r = exec("[ -d /sys/module/kernelsu ] && echo R1; grep -q '^kernelsu' /proc/modules 2>/dev/null && echo R2; echo END")
-        val out = r?.second ?: return false
-        return out.contains("R1") || out.contains("R2")
+        val out = r?.second
+        val verdict = out?.let { it.contains("R1") || it.contains("R2") } ?: false
+        Log.i(TAG, "checkRooted: verdict=$verdict raw=[${out?.take(60) ?: "NULL"}] rc=${r?.first}")
+        return verdict
     }
 
     /** Самолечение: добавить паб-ключи в /data/misc/adb/adb_keys через свежий рут. */
@@ -437,6 +454,7 @@ class MainActivity : Activity() {
 
     /** Автостатус при открытии. */
     private fun autoStatus() {
+        Log.i(TAG, "autoStatus: shizukuReady=${shizukuReady()} permitted=${shizukuPermitted()} adbAlive=${adbAlive()}")
         if (checkRooted()) {
             status("✓ Рут активен (KernelSU)")
             time("после ребута нажми кнопку для повторной установки")
