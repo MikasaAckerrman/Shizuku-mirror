@@ -15,6 +15,7 @@ import com.ownroot.wrapper.adb.AdbClient
 import com.ownroot.wrapper.adb.AdbKey
 import com.ownroot.wrapper.adb.AdbKeyStore
 import rikka.shizuku.Shizuku
+import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
