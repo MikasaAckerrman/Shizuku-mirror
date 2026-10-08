@@ -182,7 +182,10 @@ class MainActivity : Activity() {
             try {
                 AdbClient(HOST, PORT, key, readTimeoutMs = timeoutSec * 1000 + 15_000).use { c ->
                     c.connect() // стримы (plainOutputStream и т.д.) создаются ТОЛЬКО здесь
-                    c.shellCommand(cmd) { chunk -> sb.append(chunk) }
+                    c.shellCommand(cmd) { chunk ->
+                        // [fix] chunk = ByteArray: append(ByteArray) пишет "[B@hash"!
+                        sb.append(String(chunk, Charsets.UTF_8))
+                    }
                 }
             } catch (e: Throwable) {
                 // [fix] исключение close() НЕ отменяет результат: команда могла успеть —
