@@ -180,6 +180,7 @@ class MainActivity : Activity() {
         if (stdin == null) {
             try {
                 AdbClient(HOST, PORT, key, readTimeoutMs = timeoutSec * 1000 + 15_000).use { c ->
+                    c.connect() // стримы (plainOutputStream и т.д.) создаются ТОЛЬКО здесь
                     val sb = StringBuilder()
                     c.shellCommand(cmd) { chunk -> sb.append(chunk) }
                     return 0 to sb.toString()
@@ -208,13 +209,20 @@ class MainActivity : Activity() {
                 // ненадёжен (инцидент 01:28 — зависание записи/исключение на пустом open).
                 if (stdin != null) p.outputStream.use { os -> os.write(stdin) }
                 val done = p.waitFor(timeoutSec.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-                return if (!done) {
+                if (!done) {
                     runCatching { p.destroy() }
-                    124 to synchronized(out) { out.toString() }
-                } else {
-                    r1.join(3000); r2.join(3000)
-                    p.exitValue() to synchronized(out) { out.toString() }
+                    return 124 to synchronized(out) { out.toString() }
                 }
+                r1.join(3000); r2.join(3000)
+                // [fix] exitValue у Shizuku кидает IllegalArgumentException("process hasn't exited")
+                // даже после waitFor — ждём коротким поллом (binder-статус добирается с задержкой)
+                var ev: Int? = null
+                for (i in 1..20) {
+                    ev = runCatching { p.exitValue() }.getOrNull()
+                    if (ev != null) break
+                    Thread.sleep(250)
+                }
+                return (ev ?: 0) to synchronized(out) { out.toString() }
             } catch (e: Throwable) {
                 Log.w(TAG, "exec(shizuku) failed: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(60)}]")
                 progress("⚠ shizuku: ${e.javaClass.simpleName} ${e.message?.take(80)}")
@@ -354,6 +362,7 @@ class MainActivity : Activity() {
         // 1) adb — основной путь (молчание cheese-скана длится минуты: таймаут чтения 30 мин)
         try {
             AdbClient(HOST, PORT, key, readTimeoutMs = 1_800_000).use { c ->
+                c.connect() // без connect() стримы не инициализированы (UninitializedPropertyAccessException)
                 val sb = StringBuilder()
                 c.shellCommand("sh $T/oneclick.sh 2>&1") { chunk ->
                     val s = String(chunk, Charsets.UTF_8)
