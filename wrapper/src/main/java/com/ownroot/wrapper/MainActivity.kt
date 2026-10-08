@@ -178,17 +178,19 @@ class MainActivity : Activity() {
     private fun exec(cmd: String, stdin: ByteArray? = null, timeoutSec: Int = 90): Pair<Int, String>? {
         // 1) AdbClient — основной транспорт
         if (stdin == null) {
+            val sb = StringBuilder()
             try {
                 AdbClient(HOST, PORT, key, readTimeoutMs = timeoutSec * 1000 + 15_000).use { c ->
                     c.connect() // стримы (plainOutputStream и т.д.) создаются ТОЛЬКО здесь
-                    val sb = StringBuilder()
                     c.shellCommand(cmd) { chunk -> sb.append(chunk) }
-                    return 0 to sb.toString()
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "exec(adb) failed: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(60)}]")
-                progress("⚠ adb: ${e.javaClass.simpleName} ${e.message?.take(80)}")
+                // [fix] исключение close() НЕ отменяет результат: команда могла успеть —
+                // отдаём что пришло (sb), пустой вывод разберёт вызывающий
+                Log.w(TAG, "exec(adb) close/IO: ${e.javaClass.simpleName}: ${e.message} [${cmd.take(50)}]")
             }
+            if (sb.isNotEmpty()) return 0 to sb.toString()
+            progress("⚠ adb: нет ответа (${sb.length} байт)")
         }
         // 2) Shizuku newProcess — запасной (стримы исторически ненадёжны)
         if (shizukuReady() && shizukuPermitted()) {
@@ -377,8 +379,9 @@ class MainActivity : Activity() {
                 }
             }
         } catch (e: Throwable) {
+            // close()-ошибки после успешного стрима не отменяют прогон: oneclick мог завершиться
             Log.w(TAG, "runOneclick(adb): ${e.javaClass.simpleName}: ${e.message}")
-            progress("⚠ adb-запуск не удался (${e.javaClass.simpleName}), пробую Shizuku…")
+            progress("⚠ adb-канал закрылся (${e.javaClass.simpleName}), проверяю статус…")
         }
         // 2) Shizuku — запасной
         if (shizukuReady() && shizukuPermitted()) {
