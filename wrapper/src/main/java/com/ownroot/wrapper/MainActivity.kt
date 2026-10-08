@@ -2,6 +2,7 @@ package com.ownroot.wrapper
 
 import android.app.Activity
 import android.graphics.Color
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -86,7 +87,7 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
     private val permListener = Shizuku.OnRequestPermissionResultListener { req, res ->
-        if (req == REQUEST_SHIZUKU && res == Shizuku.PERMISSION_GRANTED && !running.get()) {
+        if (req == REQUEST_SHIZUKU && res == PackageManager.PERMISSION_GRANTED && !running.get()) {
             toast("Разрешение Shizuku получено — запускаю")
             startFlow()
         }
@@ -157,7 +158,7 @@ class MainActivity : Activity() {
 
     private fun shizukuReady(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
     private fun shizukuPermitted(): Boolean = try {
-        Shizuku.checkSelfPermission() == Shizuku.PERMISSION_GRANTED
+        Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
     } catch (_: Throwable) { false }
 
     /**
