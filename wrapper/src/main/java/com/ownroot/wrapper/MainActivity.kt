@@ -127,7 +127,7 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    private fun status(s: String) = main.runOnUiThread {
+    private fun status(s: String) = main.post {
         statusView.text = s
         statusView.setTextColor(
             when {
@@ -143,15 +143,15 @@ class MainActivity : Activity() {
             if (logTail.isEmpty() || logTail.last() != ru) logTail.addLast(ru)
             while (logTail.size > 24) logTail.removeFirst()
             val text = logTail.joinToString("\n")
-            main.runOnUiThread { progressView.text = text }
+            main.post { progressView.text = text }
         }
     }
 
-    private fun toast(s: String) = main.runOnUiThread {
+    private fun toast(s: String) = main.post {
         android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_LONG).show()
     }
 
-    private fun time(s: String) = main.runOnUiThread { timeView.text = s }
+    private fun time(s: String) = main.post { timeView.text = s }
 
     // ---------------- Транспорт ----------------
 
@@ -217,7 +217,7 @@ class MainActivity : Activity() {
         thread(name = "root-flow") {
             try { flow() } finally {
                 running.set(false)
-                main.runOnUiThread { button.isEnabled = true }
+                main.post { button.isEnabled = true }
             }
         }
     }
@@ -225,7 +225,7 @@ class MainActivity : Activity() {
     private fun flow() {
         val t0 = SystemClock.elapsedRealtime()
         synchronized(logTail) { logTail.clear() }
-        main.runOnUiThread { progressView.text = "" }
+        main.post { progressView.text = "" }
         status("Запуск…")
 
         // --- рут уже есть? ---
