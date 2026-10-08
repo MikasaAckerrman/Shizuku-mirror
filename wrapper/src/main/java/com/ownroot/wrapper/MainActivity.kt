@@ -291,13 +291,17 @@ class MainActivity : Activity() {
         if (files.size < KIT_MD5.size) return "assets/kit неполон (${files.size}/${KIT_MD5.size})"
         for (name in KIT_MD5.keys) if (name !in files) return "нет в assets: $name"
 
-        for (name in KIT_MD5.keys) {
-            val bytes = assets.open("kit/$name").use { it.readBytes() }
-            val rc = exec("cat > $T/$name && echo W", stdin = bytes, timeoutSec = 180)
-            if (rc == null || !rc.second.contains("W")) return "запись $name не подтверждена"
-            progress("→ $name (${bytes.size / 1024}КБ) ok")
-        }
-        exec("chmod 755 " + EXECUTABLES.joinToString(" ") { "$T/$it" })
+        // Развёртка одним unzip из собственного APK — без stdin-стримов через binder
+        // (стрим-канал IRemoteProcess ненадёжен: зависание записи 2.3МБ, см. инцидент 01:28).
+        val apk = applicationInfo.sourceDir
+        val rc = exec(
+            "cd $T && rm -f ${KIT_MD5.keys.joinToString(" ")} && unzip -j -o '$apk' 'assets/kit/*' -d $T 2>&1 | tail -1",
+            timeoutSec = 300
+        )
+        if (rc == null || rc.first != 0) return "unzip не выполнен (rc=${rc?.first} ${rc?.second?.take(120)})"
+        progress("распакован кит из APK (${KIT_MD5.size} файлов)")
+
+        exec("chmod 755 " + EXECUTABLES.joinToString(" ") { "$T/$it" } + " 2>/dev/null; echo OK")
         val got = exec("cd $T && md5sum ${KIT_MD5.keys.joinToString(" ")} 2>&1")
             ?: return "md5-проверка недоступна"
         val gotMap = got.second.lineSequence()
