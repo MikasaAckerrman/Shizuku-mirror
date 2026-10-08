@@ -181,7 +181,9 @@ class MainActivity : Activity() {
                         p.errorStream.bufferedReader().forEachLine { synchronized(out) { out.append(it).append('\n') } }
                     } catch (_: Throwable) {}
                 }
-                p.outputStream.use { os -> if (stdin != null) os.write(stdin) }
+                // НИКОГДА не открываем outputStream без данных: binder-канал stdin
+                // ненадёжен (инцидент 01:28 — зависание записи/исключение на пустом open).
+                if (stdin != null) p.outputStream.use { os -> os.write(stdin) }
                 val done = p.waitFor(timeoutSec.toLong(), java.util.concurrent.TimeUnit.SECONDS)
                 if (!done) {
                     runCatching { p.destroy() }
