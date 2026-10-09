@@ -158,15 +158,25 @@ else
     ATT=$((ATT+1))
     say "--- 尝试 $ATT/3 ---"
     rm -f $LOG 2>/dev/null; touch $LOG
-    # [ownroot scan-hint] старт с прошлой успешной физбазы; попытка>=2 = полный свип
+    # [ownroot scan-hint + poison-guard] диапазон попытки: hint приоритетен, яд обходится
     HINT=$(cat $T/scan_hint 2>/dev/null)
     case "$HINT" in 0x[0-9a-f][0-9a-f]*) ;; *) HINT= ;; esac
-    if [ $ATT -gt 1 ]; then HINT=; rm -f $T/scan_hint 2>/dev/null; fi
-    SCANB=${HINT:-0xa3000000}
+    POISON=$(cat $T/scan_poison 2>/dev/null)
+    case "$POISON" in 0x[0-9a-f][0-9a-f]*) ;; *) POISON= ;; esac
+    [ $ATT -gt 1 ] && HINT=
+    case $ATT in
+      1) SCANB=${HINT:-0xa3000000}
+         [ -z "$HINT" ] && [ -n "$POISON" ] && SCANB=$(printf '0x%x' $(( $POISON + 0x1000000 ))) ;;
+      2) if [ -n "$POISON" ]; then SCANB=$(printf '0x%x' $(( $POISON + 0x1000000 )));
+         else SCANB=0xa3000000; fi ;;
+      3) SCANB=0xa3000000 ;;
+    esac
+    SCANE=$([ -n "$POISON" ] && [ $ATT -eq 3 ] && printf '0x%x' $POISON || echo 0xae000000)
     [ -n "$HINT" ] && say "scan-hint: старт с $HINT (прошлый успешный регион)"
+    [ -n "$POISON" ] && say "poison-guard: известный яд $POISON — диапазон $SCANB→$SCANE"
     ( cd $T && env CHEESE_CPURW=1 CHEESE_NO_RETRY=1 CHEESE_DROP_SU=1 \
         CHEESE_ROOT_DAEMON=1 CHEESE_CPURW_VERBOSE=1 CHEESE_PATCH_VR=1 \
-        CHEESE_PHYSCAN_BASE=$SCANB CHEESE_PHYSCAN_END=0xae000000 \
+        CHEESE_PHYSCAN_BASE=$SCANB CHEESE_PHYSCAN_END=$SCANE \
         CHEESE_PHYSCAN_STRIDE=0x1000000 \
         ./cheese > $LOG 2>&1 ) &
     CPID=$!
@@ -185,7 +195,7 @@ else
         sleep 1
       done ) &
     TAILPID=$!
-    i=0
+    i=0; STUCK=0; LAST_SIG=
     while [ $i -lt 300 ]; do
       kill -0 $CPID 2>/dev/null || break
       sleep 1; i=$((i+1))
@@ -200,6 +210,17 @@ else
         say "scan-hint промах (${i}s без kbase) — полный свип следующей попыткой"
         break
       fi
+      # [ownroot poison-guard] вечная верификация: хвост лога замер 25с = ядовитый кандидат
+      CUR_SIG=$(tail -2 $LOG 2>/dev/null | md5sum | cut -d' ' -f1)
+      if [ -n "$CUR_SIG" ] && [ "$CUR_SIG" = "$LAST_SIG" ]; then STUCK=$((STUCK+1)); else STUCK=0; fi
+      LAST_SIG=$CUR_SIG
+      if [ $STUCK -ge 25 ]; then
+        NEWP=$(grep -oE 'found phyaddr candidate: 0x[0-9a-f]+' $LOG 2>/dev/null | tail -1 | grep -oE '0x[0-9a-f]+$')
+        [ -z "$NEWP" ] && NEWP=$(grep -oE 'trying cand 0x[0-9a-f]+' $LOG 2>/dev/null | tail -1 | grep -oE '0x[0-9a-f]+$')
+        say "poison-guard: верификация замерла ${i}s — кандидат $NEWP ядовит: kill+сдвиг диапазона"
+        [ -n "$NEWP" ] && { echo $NEWP > $T/scan_poison 2>/dev/null; POISON=$NEWP; }
+        break
+      fi
     done
     kill $TAILPID 2>/dev/null; kill $CPID 2>/dev/null
     wait $CPID 2>/dev/null
@@ -207,7 +228,7 @@ else
     say "尝试 $ATT: 未获得 root (完整日志: $LOG)"
     sleep 3
   done
-  [ $OK = 1 ] || die "cheese 3 次尝试均失败, 详见 $LOG (建议重启手机后重跑; 开机后 75 秒内竞态窗口更优)"
+  [ $OK = 1 ] || die "cheese 3 次尝试均失败, 详见 $LOG (яд: $POISON; hint: $(cat $T/scan_hint 2>/dev/null); 建议重启手机后重跑 — hint и яд сохранены и будут учтены)"
 fi
 
 # ---------- 阶段2: root 通道确认 ----------
@@ -530,3 +551,5 @@ else
 fi
 say "✔ 清理完成"
 echo "ALL-DONE"
+
+# p67
