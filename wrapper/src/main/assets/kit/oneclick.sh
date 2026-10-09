@@ -188,7 +188,7 @@ else
     i=0
     while [ $i -lt 300 ]; do
       kill -0 $CPID 2>/dev/null || break
-      sleep 2; i=$((i+2))
+      sleep 1; i=$((i+1))
       if grep -qE 'final uid: 0|root daemon forked|su server ready' $LOG 2>/dev/null; then
         say "ROOTDONE 检测到 (${i}s), 提前收尾"
         sleep 2; kill $CPID 2>/dev/null
