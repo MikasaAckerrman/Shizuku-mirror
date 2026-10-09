@@ -50,7 +50,7 @@ class MainActivity : Activity() {
             "libksud.dm" to "9afeaf768dfbcd55364bc3c0e509f778",
             "libksud.orig" to "1d2d90b14ed08db6fa77f16913d2bb65",
             "libksud.so.patched" to "0dbe71af1cd5c13e5e172470fc364728",
-            "oneclick.sh" to "beac5e4f8d72ad6b96d10a607731eff8",
+            "oneclick.sh" to "e9c56e6c555f6665c45fc9808aee3c5f",
             "reksu-manager.apk" to "d7393839851650ae83d7054d12d8f635",
             "resukisu.ko.base.canonical" to "a93cb5dc1ef3dbd4a07084cdd1d91a23",
             "resukisu.ko.base.rsc" to "a572ab0b4a35859574a3e37de5a96c6f",
@@ -111,6 +111,19 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL; setPadding(pad, pad * 2, pad, pad)
         }
         statusView = TextView(this).apply { textSize = 20f; setPadding(0, 0, 0, pad / 2) }
+        // [debug] долгий тап по статусу = проверка Shizuku-транспорта вживую (echo, безопасно)
+        statusView.setOnLongClickListener {
+            thread(name = "shizuku-selftest") {
+                Log.i(TAG, "shizuku-selftest: START")
+                if (!shizukuReady()) { progress("selftest: Shizuku binder не отвечает"); return@thread }
+                if (!shizukuPermitted()) { progress("selftest: нет разрешения Shizuku"); return@thread }
+                val r = shizukuExecOnly("echo SHIZUKU_TRANSPORT_OK")
+                val ok = r?.second?.contains("SHIZUKU_TRANSPORT_OK") == true
+                progress("selftest: Shizuku-транспорт ${if (ok) "✓ РАБОТАЕТ" else "✗ не отвечает"} (rc=${r?.first})")
+                Log.i(TAG, "shizuku-selftest: ok=$ok rc=${r?.first}")
+            }
+            true
+        }
         timeView = TextView(this).apply { textSize = 14f; setTextColor(Color.GRAY); setPadding(0, 0, 0, pad) }
         progressView = TextView(this).apply {
             textSize = 12f; typeface = android.graphics.Typeface.MONOSPACE
@@ -162,6 +175,33 @@ class MainActivity : Activity() {
     private fun shizukuPermitted(): Boolean = try {
         Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
     } catch (_: Throwable) { false }
+
+    /** Только-Shizuku exec (для selftest: доказать транспорт без adb). */
+    private fun shizukuExecOnly(cmd: String, timeoutSec: Int = 15): Pair<Int, String>? {
+        if (!shizukuReady() || !shizukuPermitted()) return null
+        return try {
+            val p = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, T)
+            val out = StringBuilder()
+            val r1 = thread(name = "st-out") {
+                try { p.inputStream.bufferedReader().forEachLine { synchronized(out) { out.append(it).append('\n') } } } catch (_: Throwable) {}
+            }
+            val r2 = thread(name = "st-err") {
+                try { p.errorStream.bufferedReader().forEachLine { synchronized(out) { out.append(it).append('\n') } } } catch (_: Throwable) {}
+            }
+            val done = p.waitFor(timeoutSec.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+            r1.join(3000); r2.join(3000)
+            var ev: Int? = null
+            for (i in 1..20) {
+                ev = runCatching { p.exitValue() }.getOrNull()
+                if (ev != null) break
+                Thread.sleep(250)
+            }
+            (ev ?: 0) to synchronized(out) { out.toString() }
+        } catch (e: Throwable) {
+            Log.w(TAG, "shizukuExecOnly: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
 
     /**
      * Выполнить короткую команду (НЕ эксплойт — таймаут разрешает destroy).
@@ -412,9 +452,17 @@ class MainActivity : Activity() {
                     try { p.errorStream.bufferedReader().forEachLine { progress(it) } } catch (_: Throwable) {}
                 }
                 p.waitFor() // без таймаута и destroy: бюджет сам ограничен внутри скрипта
-                val rc = p.exitValue()
-                progress("[oneclick] завершён, exit=$rc")
-                return rc
+                // [fix] exitValue после waitFor у Shizuku кидает IllegalArgumentException
+                // (binder-статус добирается с задержкой) — поллим как в exec()
+                var rc: Int? = null
+                for (i in 1..20) {
+                    rc = runCatching { p.exitValue() }.getOrNull()
+                    if (rc != null) break
+                    Thread.sleep(250)
+                }
+                val res = rc ?: -1
+                progress("[oneclick] завершён, exit=$res")
+                return res
             } catch (e: Throwable) {
                 progress("ошибка запуска oneclick: ${e.message}")
                 return -1

