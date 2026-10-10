@@ -7,7 +7,11 @@
 #     /data/local/tmp2 (device_reksu.sh 约定路径)
 # 用法: sh oneclick.sh [<slide-hex>]   # slide 可选手动传入
 # ============================================================
-T=/data/local/tmp
+# ownroot-layout: скрипт самонаходится — кит ищется в ЕГО директории (flat $T0 или вложенный
+# $T0/assets/kit — обе раскладки работают). Персистентные файлы (hint/poison) — по $T0 абсолютному:
+# переживают stage-8, перерeempsлови развёрток, и НЕ зависят от раскладки деплоя.
+T0=/data/local/tmp
+T=$(dirname "$0" 2>/dev/null); [ -d "$T" ] || T=$T0
 T2=/data/local/tmp2
 LOG=$T/cheese.log
 say(){ echo "[oneclick] $*"; }
@@ -137,6 +141,12 @@ resolve_slide() { # 从 cheese.log 解析 kbase(交叉投票) 再减基址得 sl
 
 # ---------- 阶段0: 前置（提权前文件全在 $T） ----------
 say "阶段0: 前置检查"
+# ownroot-F3: защита от двойного запуска (второй cheese во время первого = GPU-клинч,
+# именно этот сценарий давал фризы/ребуты). pgrep -f ловит и наш, и его (fuckneo10-App) экземпляр.
+OTHERS=$(pgrep -f "oneclick\.sh" 2>/dev/null | grep -v "^\$$\|^$PPID$" | head -3)
+if [ -n "$OTHERS" ]; then
+  die "oneclick уже выполняется (pid $OTHERS) — второй запуск запрещён"
+fi
 for f in $T/cheese $T/su_bin $T/slidepatch $T/resukisu.ko.base.rsc \
          $T/resukisu.ko.base.canonical $T/device_reksu.sh; do
   [ -f "$f" ] || die "缺少: $f"
@@ -159,19 +169,19 @@ else
     say "--- 尝试 $ATT/3 ---"
     rm -f $LOG 2>/dev/null; touch $LOG
     # [ownroot scan-hint + poison-guard] диапазон попытки: hint приоритетен, яд обходится
-    HINT=$(cat $T/scan_hint 2>/dev/null)
+    HINT=$(cat $T0/scan_hint 2>/dev/null)
     case "$HINT" in 0x[0-9a-f][0-9a-f]*) ;; *) HINT= ;; esac
-    POISON=$(cat $T/scan_poison 2>/dev/null)
+    POISON=$(cat $T0/scan_poison 2>/dev/null)
     case "$POISON" in 0x[0-9a-f][0-9a-f]*) ;; *) POISON= ;; esac
     [ $ATT -gt 1 ] && HINT=
     case $ATT in
       1) SCANB=${HINT:-0xa3000000}
-         [ -z "$HINT" ] && [ -n "$POISON" ] && SCANB=$(printf '0x%x' $(( $POISON + 0x1000000 ))) ;;
-      2) if [ -n "$POISON" ]; then SCANB=$(printf '0x%x' $(( $POISON + 0x1000000 )));
+         [ -z "$HINT" ] && [ -n "$POISON" ] && SCANB=0x$(hxa ${POISON#0x} 1000000) ;; # ownroot-F11: hex-аддер (shell-арифметика 32-бит → переполнение на 0xa7+!)
+      2) if [ -n "$POISON" ]; then SCANB=0x$(hxa ${POISON#0x} 1000000);
          else SCANB=0xa3000000; fi ;;
       3) SCANB=0xa3000000 ;;
     esac
-    SCANE=$([ -n "$POISON" ] && [ $ATT -eq 3 ] && printf '0x%x' $POISON || echo 0xae000000)
+    SCANE=$([ -n "$POISON" ] && [ $ATT -eq 3 ] && echo $POISON || echo 0xae000000) # ownroot-F11: без printf-арифметики (значение уже 0x-строка)
     [ -n "$HINT" ] && say "scan-hint: старт с $HINT (прошлый успешный регион)"
     [ -n "$POISON" ] && say "poison-guard: известный яд $POISON — диапазон $SCANB→$SCANE"
     ( cd $T && env CHEESE_CPURW=1 CHEESE_NO_RETRY=1 CHEESE_DROP_SU=1 \
@@ -210,25 +220,32 @@ else
         say "scan-hint промах (${i}s без kbase) — полный свип следующей попыткой"
         break
       fi
-      # [ownroot poison-guard] вечная верификация: хвост лога замер 25с = ядовитый кандидат
+      # [ownroot poison-guard] вечная верификация: хвост лога замер 80с = ядовитый кандидат
+      # (порог 80с: в его успешном прогоне 00:19 здоровое cheese молчало 43с
+      #  между landing-раундами и ROOTDONE — порог 25с убил бы ПОБЕДУ за 18с до неё)
       CUR_SIG=$(tail -2 $LOG 2>/dev/null | md5sum | cut -d' ' -f1)
       if [ -n "$CUR_SIG" ] && [ "$CUR_SIG" = "$LAST_SIG" ]; then STUCK=$((STUCK+1)); else STUCK=0; fi
       LAST_SIG=$CUR_SIG
-      if [ $STUCK -ge 25 ]; then
+      if [ $STUCK -ge 80 ]; then
         NEWP=$(grep -oE 'found phyaddr candidate: 0x[0-9a-f]+' $LOG 2>/dev/null | tail -1 | grep -oE '0x[0-9a-f]+$')
         [ -z "$NEWP" ] && NEWP=$(grep -oE 'trying cand 0x[0-9a-f]+' $LOG 2>/dev/null | tail -1 | grep -oE '0x[0-9a-f]+$')
-        say "poison-guard: верификация замерла ${i}s — кандидат $NEWP ядовит: kill+сдвиг диапазона"
-        [ -n "$NEWP" ] && { echo $NEWP > $T/scan_poison 2>/dev/null; POISON=$NEWP; }
+        say "poison-guard: вывод замер ${STUCK}s на попытке ${i}s — кандидат $NEWP ядовит: kill+сдвиг диапазона"
+        [ -n "$NEWP" ] && { echo $NEWP > $T0/scan_poison 2>/dev/null; POISON=$NEWP; }
         break
       fi
     done
     kill $TAILPID 2>/dev/null; kill $CPID 2>/dev/null
     wait $CPID 2>/dev/null
-    if have_root; then OK=1; echo $SCANB > $T/scan_hint 2>/dev/null; say "✔ 尝试 $ATT: 提权成功 (hint=$SCANB)"; break; fi
+    if have_root; then
+      # ownroot-F10: hint = НАЙДЕННЫЙ кандидат (не старт попытки): следующий бут стартует
+      # прямо с победного региона (его прогоны стабильно находили таблицы на одном и том же)
+      FOUND=$(grep -oE 'found phyaddr candidate: 0x[0-9a-f]+' $LOG 2>/dev/null | tail -1 | grep -oE '0x[0-9a-f]+$')
+      OK=1; echo ${FOUND:-$SCANB} > $T0/scan_hint 2>/dev/null; say "✔ 尝试 $ATT: 提权成功 (hint=${FOUND:-$SCANB})"; break
+    fi
     say "尝试 $ATT: 未获得 root (完整日志: $LOG)"
     sleep 3
   done
-  [ $OK = 1 ] || die "cheese 3 次尝试均失败, 详见 $LOG (яд: $POISON; hint: $(cat $T/scan_hint 2>/dev/null); 建议重启手机后重跑 — hint и яд сохранены и будут учтены)"
+  [ $OK = 1 ] || die "cheese 3 次尝试均失败, 详见 $LOG (яд: $POISON; hint: $(cat $T0/scan_hint 2>/dev/null); 建议重启手机后重跑 — hint и яд сохранены и будут учтены)"
 fi
 
 # ---------- 阶段2: root 通道确认 ----------
@@ -552,4 +569,7 @@ fi
 say "✔ 清理完成"
 echo "ALL-DONE"
 
-# p67
+
+
+
+# p298

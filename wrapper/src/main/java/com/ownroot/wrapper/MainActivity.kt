@@ -50,7 +50,7 @@ class MainActivity : Activity() {
             "libksud.dm" to "9afeaf768dfbcd55364bc3c0e509f778",
             "libksud.orig" to "1d2d90b14ed08db6fa77f16913d2bb65",
             "libksud.so.patched" to "0dbe71af1cd5c13e5e172470fc364728",
-            "oneclick.sh" to "a223632afd3c950aca81b5100ef9c549",
+            "oneclick.sh" to "e9721f9d59f546e28efe3d1fbfafa0b0",
             "reksu-manager.apk" to "d7393839851650ae83d7054d12d8f635",
             "resukisu.ko.base.canonical" to "a93cb5dc1ef3dbd4a07084cdd1d91a23",
             "resukisu.ko.base.rsc" to "a572ab0b4a35859574a3e37de5a96c6f",
