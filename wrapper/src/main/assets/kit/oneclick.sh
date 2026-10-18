@@ -1,4 +1,14 @@
 #!/system/bin/sh
+# v8.3 (13.10): detach от pty/канала — КРИТИЧНО: запуск через app/adb даёт stdout в pty;
+# pty-backpressure (канал замолчал → write() висит НАВСЕГДА, WCHAN=file_tty_write) —
+# именно это глушило все "тихие смерти" на стадиях (не LMK, не pkill).
+# Решение: при первом запуске перезапускаем себя через setsid с stdout/stderr НАПРЯМУЮ В ФАЙЛЫ.
+if [ -z "$OC_DETACHED" ]; then
+  export OC_DETACHED=1
+  setsid /system/bin/sh "$0" "$@" </dev/null >>/data/local/tmp/oneclick.log 2>>/data/local/tmp/oneclick.err &
+  echo "$!" > /data/local/tmp/oc.runned 2>/dev/null
+  exit 0
+fi
 # ============================================================
 # oneclick.sh v3 — Neo10 设备端一键 Root（GlassRoot App 版）
 # 适配新套件 + 本机限制:
@@ -14,8 +24,16 @@ T0=/data/local/tmp
 T=$(dirname "$0" 2>/dev/null); [ -d "$T" ] || T=$T0
 T2=/data/local/tmp2
 LOG=$T/cheese.log
-say(){ echo "[oneclick] $*"; }
-die(){ echo "[!] $*"; exit 1; }
+# ownroot-v8 armor: внешний TERM/HUP-убийца стадии-2 — игнорируем сигналы мягких убийств;
+# oom_score_adj опускаем насколько возможно без рута; ndlog живёт по T0 (переживает stage-8)
+trap '' TERM HUP INT QUIT PIPE 2>/dev/null
+echo 0 > /proc/self/oom_score_adj 2>/dev/null
+echo $$ > $T0/oc.pid 2>/dev/null
+mark(){ echo "$1 $(date +%s 2>/dev/null)" > $T0/oc.stage 2>/dev/null; }
+# ownroot-v8 flush: say пишет ДВАЖДЫ — в stdout (redirect; возможен buffer-loss) И прямым
+# append в $T0/oc.ndlog (один write() на строку — переживает любое убийство процесса)
+say(){ echo "[oneclick] $*" >> $T0/oc.ndlog 2>/dev/null; echo "[oneclick] $*"; }
+die(){ echo "[!] $*" >> $T0/oc.ndlog 2>/dev/null; echo "[!] $*"; exit 1; }
 N=0
 CH=rc
 
@@ -152,7 +170,13 @@ if ! mkdir "$LOCKD" 2>/dev/null; then
   rm -rf "$LOCKD" 2>/dev/null; mkdir "$LOCKD" 2>/dev/null || die "oc.lock занят"
 fi
 echo $$ > "$LOCKD/pid"
-trap 'rm -rf "$T/oc.lock" 2>/dev/null' EXIT
+ZY_GUARD_LIST=""   # v8.5: 模块 ID, временно отключённых ради защиты от ребута
+_zyg_restore() {
+  for _m in $ZY_GUARD_LIST; do
+    "$KSU_SU" -c "rm -f /data/adb/modules/$_m/disable" >/dev/null 2>&1
+  done
+}
+trap 'rm -rf "$T/oc.lock" 2>/dev/null; _zyg_restore' EXIT
 for f in $T/cheese $T/su_bin $T/slidepatch $T/resukisu.ko.base.rsc \
          $T/resukisu.ko.base.canonical $T/device_reksu.sh; do
   [ -f "$f" ] || die "缺少: $f"
@@ -255,7 +279,7 @@ else
 fi
 
 # ---------- 阶段2: root 通道确认 ----------
-say "阶段2: 确认 root 通道"
+say "阶段2: 确认 root 通道"; mark stage2
 if [ "$(id -u)" = "0" ]; then
   CH=direct
   say "✔ 直接 root shell"
@@ -384,6 +408,7 @@ else
 fi
 
 # ---------- 阶段5: slidepatch + insmod (变体轮换 ≤4) ----------
+mark stage5 2>/dev/null
 if grep -q kernelsu /proc/modules 2>/dev/null; then
   say "阶段5: 模块已加载, 跳过"
   LOADED=1
@@ -413,8 +438,66 @@ else
   [ $LOADED = 1 ] || die "insmod 失败 (两种变体各试过多轮; 检查 slide 是否正确)"
 fi
 
+# ---------- 阶段6.5-函数: 动态管理器注册（让内核认识双体管理器） ----------
+# v8.4 (13.10): вынесено в функцию — SKIP-ветка обязана короновать менеджер,
+# иначе «root есть, но kernelsu 显示未工作» (дефект v8.1-v8.3).
+# 内核按 APK 签名 sha256 认管理器（内置白名单只有各家官方签名），
+# 双体管理器用自定义 release key 签名(b6d21941…) 不在白名单 → 管理器显示"未工作"。
+# `libksud.dm kernel dynamic-manager set-apk` 从 APK 提取签名注册给内核。
+# 管理器 APK 必须是纯 v2 签名——内核拒绝 v1 也拒绝 v3/v3.1。
+crown_manager() {
+  local dm_src="" su_mgr
+  # v8.4: ищем dm-бинарь в обоих местах и восстанавливаем из $T, если стадия 8 убрала $T2
+  for c in $T2/libksud.dm $T/libksud.dm; do [ -f "$c" ] && { dm_src=$c; break; }; done
+  if [ -z "$dm_src" ] && [ -f "$T/kit/libksud.dm" ]; then dm_src=$T/kit/libksud.dm; fi
+  if [ ! -f "$T/ksu-manager.apk" ] || [ -z "$dm_src" ]; then
+    say "⚠ ksu-manager.apk или libksud.dm не найден — пропуск коронации менеджера"
+    return 1
+  fi
+  mkdir -p "$T2" 2>/dev/null
+  [ -f "$T2/libksud.dm" ] || cp "$dm_src" "$T2/libksud.dm" 2>/dev/null
+  chmod 755 "$T2/libksud.dm" "$T/ksu-manager.apk" 2>/dev/null
+  su_mgr=$(find_ksu_su)
+  if [ -z "$su_mgr" ]; then
+    say "⚠ KSU su не найден — пропуск коронации менеджера"
+    return 1
+  fi
+  rm -f $T/dmout 2>/dev/null
+  ( "$su_mgr" -c "$T2/libksud.dm kernel dynamic-manager set-apk $T/ksu-manager.apk" > $T/dmout 2>&1 ) &
+  local dpi=$! wi=0 rc=1
+  while [ $wi -lt 45 ]; do kill -0 $dpi 2>/dev/null || break; sleep 1; wi=$((wi+1)); done
+  if kill -0 $dpi 2>/dev/null; then
+    kill -9 $dpi 2>/dev/null; wait $dpi 2>/dev/null; rc=124
+    say "⚠ коронация: timeout(45s)"
+  else
+    wait $dpi 2>/dev/null; rc=$?
+    local o; o=$(cat $T/dmout 2>/dev/null | tail -2)
+    [ -n "$o" ] && echo "$o" | sed 's/^/    /'
+  fi
+  rm -f $T/dmout 2>/dev/null
+  if [ $rc -eq 0 ]; then
+    say "✔ 动态管理器已注册 (size=0x2e8, sha256=b6d21941…) — менеджер покажет 'работает'"
+    return 0
+  fi
+  say "⚠ 动态管理器注册失败 rc=$rc — менеджер может показать '未工作'"
+  return $rc
+}
+
 # ---------- 阶段6: 激活 ----------
+# v8.1 (13.10): SKIP_ACTIV=1 ИЛИ файл-флаг $T0/skipactiv — активация ksud пропускается,
+# НО коронация менеджера (6.5) всё равно выполняется: root есть → менеджер должен работать.
+if [ "${SKIP_ACTIV:-0}" = "1" ] || [ -f "$T0/skipactiv" ]; then
+  # v8.2: flat-копия self для flow (deploy кладёт zip во вложенную assets/kit/, а flow зовёт плоский путь)
+  [ "$0" = "$T/oneclick.sh" ] || { cp "$0" $T/oneclick.sh 2>/dev/null; chmod 755 $T/oneclick.sh 2>/dev/null; say "[v8.2] flat-копия обновлена ($0 → $T/oneclick.sh)"; }
+  say "[v8.1] SKIP_ACTIV — активация ksud пропущена; root жив, канал su открыт"
+  say "阶段6.5(SKIP): 注册动态管理器签名"
+  crown_manager || true
+  say "阶段8: очищаем разметку (с флагом skip)"
+  rm -f $T2/device_reksu.sh 2>/dev/null
+  rm -rf $LOCKD; mark ALL-DONE-SKIPACTIV; exit 0
+fi
 say "阶段6: 激活 (libksud.orig post-fs-data/boot-completed)"
+# v3.2.18: 阶段5 模块加载成功后统一走 KSU su (内核 root) 通道——
 # v3.2.18: 阶段5 模块加载成功后统一走 KSU su (内核 root) 通道——
 # cheese daemon 对 /data/app、/data/adb 写入被拒, RCMD 激活通道淘汰。
 # v3.2.21: 执行位相关动作全部收进 KSU su 调用内部。原因(本机日志实证):
@@ -427,6 +510,26 @@ KSU_SU=$(find_ksu_su)
 [ -n "$KSU_SU" ] || die "模块已加载但未找到 KSU su: 激活/注册无法执行"
 KSUD_ORIG=$T2/libksud.orig
 say "激活: $KSU_SU → $KSUD_ORIG (看门狗 60s)"
+
+# v8.5 (13.10) — GUARD: 防止激活触发整机重启（已实验证实）
+# ksud (Neo10/ReSuki 35071) 的 post-fs-data 里有「模拟 soft-reboot」：
+#   若存在启用中的 zygisk 模块（模块目录里有 zygisk/*.so）→ 认为需要重启
+#   zygote 来注入它们 → 打印 "emulating soft_reboot!" → 跑 emulated-soft-reboot
+#   阶段 → Command::new("stop") = 整机重启（绕过 PowerManager，logcat 里
+#   连 ShutdownThread 都没有，pstore 空白，非常难查）。
+# 而 ZygiskNext 为规避与 KSU 的冲突通常处于禁用态 → 注入根本不可能 →
+# 结果就是「每次激活必重启」。因此激活期间临时禁用这些模块，激活后恢复。
+for _md in /data/adb/modules/*/; do
+  [ -d "$_md/zygisk" ] || continue
+  ls "$_md"zygisk/*.so >/dev/null 2>&1 || continue
+  _mn=$(basename "$_md")
+  [ -f "$_md/disable" ] && continue
+  if "$KSU_SU" -c "touch $_md/disable" >/dev/null 2>&1; then
+    ZY_GUARD_LIST="$ZY_GUARD_LIST $_mn"
+  fi
+done
+[ -n "$ZY_GUARD_LIST" ] && say "v8.5 guard: 临时禁用 zygisk 模块$ZY_GUARD_LIST（否则激活会导致重启）"
+
 rm -f $T/suact 2>/dev/null
 ( "$KSU_SU" -c "chmod 755 $KSUD_ORIG 2>/dev/null; [ -x $KSUD_ORIG ] || { echo ERR_NOEXEC; exit 9; }; $KSUD_ORIG post-fs-data; $KSUD_ORIG boot-completed" > $T/suact 2>&1 ) &
 SUI=$!
@@ -443,47 +546,23 @@ if echo "$ACT" | grep -q ERR_NOEXEC; then
   die "激活失败: $KSUD_ORIG 在 KSU su 身份下仍不可执行"
 fi
 [ -n "$ACT" ] && echo "$ACT" | tail -5 | sed 's/^/    /'
-say "✔ 激活完成"
 
-# ---------- 阶段6.5: 动态管理器注册（让内核认识 Neo10 双体管理器） ----------
-# 内核按 APK 签名 sha256 认管理器（内置白名单只有各家官方签名），
-# Neo10 双体管理器用自定义 release key (key.jks) 签名(b6d21941…) 不在白名单 → 管理器显示"未工作"。
-# `ksud dynamic-manager set-apk` 从 APK 提取签名 supercall 注册给内核，
-# 持久化 /data/adb/ksu/.dynamic_manager，内核随即 track_throne 定位已装的双体管理器。
-# 注意: 动态管理器命令只有 ReSukiSU fork 的 ksud 支持（KernelSU 3.3.0 上游无此命令），
-#       故注册专用 $KSUD_DM=libksud.dm（原 kit libksud.orig 存档）；激活仍用新版 libksud.orig。
-# 管理器 APK 必须是纯 v2 签名——内核拒绝 v1(扫 META-INF/MANIFEST.MF) 也拒绝 v3/v3.1。
+# v8.5 (13.10): 恢复 v8.5 guard 临时禁用的 zygisk 模块（trap EXIT 是兜底，这里显式恢复并汇报）
+for _mn in $ZY_GUARD_LIST; do
+  if "$KSU_SU" -c "rm -f /data/adb/modules/$_mn/disable" >/dev/null 2>&1; then
+    say "v8.5 guard: 恢复模块 $_mn"
+  else
+    say "v8.5 guard ⚠ 无法恢复模块 $_mn（EXIT-trap 兜底）"
+  fi
+done
+ZY_GUARD_LIST=""   # 已恢复，清空避免 trap 重复操作
+
+say "✔ 激活完成（无重启风险：zygisk 模块已在激活期间临时禁用）"
+
+# ---------- 阶段6.5: 动态管理器注册 ----------
+# v8.4: тело вынесено в функцию crown_manager (используется и в SKIP-ветке).
 say "阶段6.5: 注册动态管理器签名"
-if [ -f $T/ksu-manager.apk ] && [ -f $T2/libksud.dm ]; then
-  KSU_SU=$(find_ksu_su)
-  KSUD_DM=$T2/libksud.dm
-  DMRC=1; DMOUT=""
-  if [ -n "$KSU_SU" ]; then
-    rm -f $T/dmout 2>/dev/null
-    ( "$KSU_SU" -c "$KSUD_DM kernel dynamic-manager set-apk $T/ksu-manager.apk" > $T/dmout 2>&1 ) &
-    DPI=$!
-    WI=0
-    while [ $WI -lt 45 ]; do kill -0 $DPI 2>/dev/null || break; sleep 1; WI=$((WI+1)); done
-    if kill -0 $DPI 2>/dev/null; then
-      kill -9 $DPI 2>/dev/null; wait $DPI 2>/dev/null
-      DMRC=124; DMOUT="timeout(45s)"
-    else
-      wait $DPI 2>/dev/null; DMRC=$?
-      DMOUT=$(cat $T/dmout 2>/dev/null)
-    fi
-    rm -f $T/dmout 2>/dev/null
-  else
-    DMOUT="KSU su 未找到 (阶段5 之后应当存在)"; DMRC=125
-  fi
-  [ -n "$DMOUT" ] && echo "$DMOUT" | tail -3 | sed 's/^/    /'
-  if [ $DMRC -eq 0 ]; then
-    say "✔ 动态管理器已注册 (期望: size=0x2e8, sha256=b6d21941…) — 重开管理器应显示'工作中'"
-  else
-    say "⚠ 动态管理器注册失败 rc=$DMRC: Neo10 双体管理器可能仍显示'未工作' (官方管理器不受影响)"
-  fi
-else
-  say "⚠ $T/ksu-manager.apk 或 $T2/libksud.dm 不存在, 跳过动态管理器注册"
-fi
+crown_manager || true
 
 # ---------- 阶段6.6: 内核日志诊断 (加冕是否成功) ----------
 # 诊断用开关: 1=抓 KernelSU 内核日志定位加冕链, 0=关闭(日常使用)
@@ -542,11 +621,9 @@ fi
 # 另: $T/su 等文件由 cheese 以 root 落下且 /data/local/tmp 带 sticky 位,
 # shell 身份删不掉 → KSU su (root) 收尾扫尾。运行中删除自身脚本在 Unix 无害。
 say "阶段8: 清理部署痕迹 ($T 与 $T2)"
-CLEAN_T="$T/cheese $T/cheese.log $T/su $T/su_bin $T/slidepatch \
-$T/resukisu.ko.base.canonical $T/resukisu.ko.base.rsc \
-$T/libksud.orig $T/libksud.dm $T/device_reksu.sh $T/getslide.sh \
-$T/ksu_variant_flag $T/ksu-manager.apk \
-$T/rootcmd $T/rootout $T/dmout $T/suact $T/klog $T/vout $T/oneclick.sh"
+# ownroot-v8: больше НЕ стираем одноклик-скрипт, кит и cheese.log — это даёт (1) диагностику
+# после прогона, (2) повторный запуск без полной развёртки (md5-гейт пропускает deploy => те же 20-40с)
+CLEAN_T="$T/rootcmd $T/rootout $T/dmout $T/suact $T/klog $T/vout"
 rm -f $CLEAN_T 2>/dev/null
 rm -rf $T2 2>/dev/null
 if [ -n "$KSU_SU" ]; then
@@ -573,153 +650,13 @@ else
   [ -d $T2 ] && say "⚠ KSU su 不可用, $T2 清理未验证" || say "✔ $T2 已清空"
 fi
 say "✔ 清理完成"
-echo "ALL-DONE"
+mark alldone 2>/dev/null; echo "ALL-DONE"
 
 
 
 
-# p298
-# p1
-# p2
-# p3
-# p4
-# p5
-# p6
-# p7
-# p8
-# p9
-# p10
-# p11
-# p12
-# p13
-# p14
-# p15
-# p16
-# p17
-# p18
-# p19
 # p20
-# p21
-# p22
-# p23
-# p24
-# p25
-# p26
-# p27
-# p28
-# p29
-# p30
-# p31
-# p32
-# p33
-# p34
-# p35
-# p36
-# p37
-# p38
-# p39
-# p40
-# p41
-# p42
-# p43
-# p44
-# p45
-# p46
-# p47
-# p48
-# p49
-# p50
-# p51
-# p52
-# p53
-# p54
-# p55
-# p56
-# p57
-# p58
-# p59
-# p60
-# p61
-# p62
-# p63
-# p64
-# p65
-# p66
-# p67
-# p68
-# p69
-# p70
-# p71
-# p72
-# p73
-# p74
-# p75
-# p76
-# p77
-# p78
-# p79
-# p80
-# p81
-# p82
-# p83
-# p84
-# p85
-# p86
-# p87
-# p88
-# p89
-# p90
-# p91
-# p92
-# p93
-# p94
-# p95
-# p96
-# p97
-# p98
-# p99
-# p100
-# p101
-# p102
-# p103
-# p104
-# p105
-# p106
-# p107
-# p108
-# p109
-# p110
-# p111
-# p112
-# p113
-# p114
-# p115
-# p116
-# p117
-# p118
-# p119
-# p120
-# p121
-# p122
-# p123
-# p124
-# p125
-# p126
-# p127
-# p128
-# p129
-# p130
-# p131
-# p132
-# p133
-# p134
-# p135
+
+# p156
+
 # p136
-# p137
-# p138
-# p139
-# p140
-# p141
-# p142
-# p143
-# p144

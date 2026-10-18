@@ -143,7 +143,9 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    private fun status(s: String) = main.post {
+    private fun status(s: String) {
+        Log.i(TAG, "STAGE: $s")
+        main.post {
         statusView.text = s
         statusView.setTextColor(
             when {
@@ -151,6 +153,7 @@ class MainActivity : Activity() {
                 s.contains("✗") -> Color.rgb(0xC6, 0x28, 0x28)
                 else -> Color.DKGRAY
             })
+        }
     }
 
     private fun progress(line: String) {
@@ -167,7 +170,10 @@ class MainActivity : Activity() {
         android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_LONG).show()
     }
 
-    private fun time(s: String) = main.post { timeView.text = s }
+    private fun time(s: String) {
+        Log.i(TAG, "STAGE-T: $s")
+        main.post { timeView.text = s }
+    }
 
     // ---------------- Транспорт ----------------
 
@@ -347,17 +353,37 @@ class MainActivity : Activity() {
         // --- oneclick: запуск, НИКОГДА не убиваем ---
         status("Эксплойт: cheese → модуль (до 3 попыток × 300с)")
         time("старт " + java.text.SimpleDateFormat("HH:mm:ss").format(java.util.Date()))
+        // v8.9-логирование: RUN_ID + LOGSTART-корреляция (детач-ребёнок оценивается
+        // только по СВОИМ байтам, никогда по bootstrap-rc)
+        val runId = "R" + java.text.SimpleDateFormat("HHmmssSSS").format(java.util.Date())
+        Log.i(TAG, "STAGE: EXPLOIT_SPAWN RUN=$runId")
+        val logStart = childLogOffset()
         val exit = runOneclick()
+        Log.i(TAG, "STAGE: BOOTSTRAP_RC=$exit RUN=$runId (детач; вердикт = маркеры ребёнка)")
         val secs = (SystemClock.elapsedRealtime() - t0) / 1000
 
-        // --- верификация ---
-        if (checkRooted()) {
-            status("✓ Рут активен (KernelSU) · за ${secs}с")
-            time("канал: adb/Shizuku · oneclick exit=$exit")
-            healAdbKeys()
-        } else {
-            status("✗ Рут не встал (exit=$exit, ${secs}с)")
-            time("лог выше; попытки вероятностные — нажми снова")
+        // --- верификация: ждём ЗАВЕРШЕНИЕ детач-ребёнка и ЕГО маркеры ---
+        val verdict = waitChildVerdict(runId, logStart)
+        val secs2 = (SystemClock.elapsedRealtime() - t0) / 1000
+        when (verdict) {
+            "SUCCESS" -> {
+                if (checkRooted()) {
+                    status("✓ Рут активен (KernelSU) · за ${secs2}с")
+                    time("канал: adb/Shizuku · вердикт=SUCCESS RUN=$runId")
+                    healAdbKeys()
+                } else {
+                    status("⚠ Маркер успеха есть, root-проверка не прошла (${secs2}с)")
+                    time("вердикт=SUCCESS-NO-ROOT RUN=$runId — смотри лог")
+                }
+            }
+            "FAIL" -> {
+                status("✗ Рут не встал (скан не нашёл цель, ${secs2}с)")
+                time("вердикт=FAIL RUN=$runId; попытки вероятностные — нажми снова")
+            }
+            else -> {
+                status("✗ Результат неизвестен (процесс завершился без маркера, ${secs2}с)")
+                time("вердикт=UNKNOWN RUN=$runId — не считаем успехом")
+            }
         }
     }
 
@@ -469,6 +495,44 @@ class MainActivity : Activity() {
             }
         }
         return -1
+    }
+
+    /** v8.9: смещение конца oneclick.log на момент спавна (LOGSTART-паттерн,
+     *  доказанный в root.sh-стенде: ребёнка оцениваем ТОЛЬКО по байтам,
+     *  записанным ПОСЛЕ спавна — чужие запуски невидимы). */
+    private fun childLogOffset(): Long = try {
+        exec("wc -c < $T/oneclick.log")?.trim()?.toLongOrNull() ?: 0L
+    } catch (_: Throwable) { 0L }
+
+    /** v8.9: вердикт детач-ребёнка ТОЛЬКО по его маркерам. SUCCESS/FAIL/UNKNOWN.
+     *  UNKNOWN (процесс умер/бюджет без маркера) — никогда не успех (требование ревью №3).
+     *  pgrep с [o]-трюком — без self-match (урок самоматчинга). */
+    private fun waitChildVerdict(runId: String, logStart: Long): String {
+        var seen = false
+        for (i in 1..190) { // 190×8с ≈ 25 мин > капа скрипта (~13 мин с гейтом)
+            Thread.sleep(8000)
+            try {
+                val alive = (exec("pgrep -f '[o]neclick\\.sh' | wc -l")?.trim()?.toIntOrNull() ?: 0)
+                val tail = exec("tail -c +${logStart + 1} $T/oneclick.log 2>/dev/null") ?: ""
+                if (!seen && tail.isNotBlank()) {
+                    seen = true
+                    Log.i(TAG, "STAGE: CHILD_ALIVE RUN=$runId")
+                }
+                when {
+                    tail.contains("ALL-DONE") || tail.contains("Live ✓") -> return "SUCCESS"
+                    tail.contains("未获得 root") || tail.contains("не дал рут") ||
+                        tail.contains("均失败") || tail.contains("СТОП:") -> return "FAIL"
+                }
+                if (alive == 0) {
+                    Log.i(TAG, "STAGE: CHILD_DEAD RUN=$runId без маркера — UNKNOWN")
+                    return "UNKNOWN"
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "waitChildVerdict: ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
+        Log.i(TAG, "STAGE: CHILD_BUDGET TIMEOUT RUN=$runId")
+        return "UNKNOWN"
     }
 
     /** Широкая проверка рута: /sys/module/kernelsu (GKI) ИЛИ /proc/modules. */
