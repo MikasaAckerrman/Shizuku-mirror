@@ -24,7 +24,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import moe.shizuku.manager.R
-import moe.shizuku.manager.ShizukuSettings
 import moe.shizuku.manager.adb.*
 import moe.shizuku.manager.databinding.AdbPairDialogBinding
 import rikka.lifecycle.viewModels
@@ -69,7 +68,7 @@ class AdbPairDialogFragment : DialogFragment() {
             intent.putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
             try {
                 it.context.startActivity(intent)
-            } catch (e: ActivityNotFoundException) {
+            } catch (_: ActivityNotFoundException) {
             }
         }
 
@@ -177,8 +176,10 @@ private class ViewModel(context: Context) : androidx.lifecycle.ViewModel() {
         GlobalScope.launch(Dispatchers.IO) {
             val host = "127.0.0.1"
 
+            // [chain] Pairing must authorize the SAME key the start engine
+            // uses — AdbKeyHolder is the single source of the key.
             val key = try {
-                AdbKey(PreferenceAdbKeyStore(ShizukuSettings.getPreferences()), "shizuku")
+                AdbKeyHolder.get()
             } catch (e: Throwable) {
                 e.printStackTrace()
                 _result.postValue(AdbKeyException(e))
