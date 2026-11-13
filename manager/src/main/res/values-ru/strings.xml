@@ -143,4 +143,5 @@
     <string name="provisioning_pair_wifi">Спарить по Wi-Fi</string>
     <string name="provisioning_working">Работаю…</string>
     <string name="provisioning_root_unavailable">Root на этом устройстве недоступен</string>
+    <string name="provisioning_seed_fail">Не удалось добавить доверие</string>
 </resources>
