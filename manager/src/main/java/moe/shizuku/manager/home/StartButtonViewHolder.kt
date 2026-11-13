@@ -14,7 +14,6 @@ import moe.shizuku.manager.databinding.HomeStartButtonBinding
 import moe.shizuku.manager.model.ServiceStatus
 import moe.shizuku.manager.starter.StarterService
 import moe.shizuku.manager.starter.StarterState
-import moe.shizuku.manager.utils.EnvironmentUtils
 import rikka.core.content.asActivity
 import rikka.recyclerview.BaseViewHolder
 import rikka.recyclerview.BaseViewHolder.Creator
@@ -54,17 +53,12 @@ class StartButtonViewHolder(private val binding: HomeStartButtonBinding, root: V
                 })
             }
             ShizukuSettings.START_METHOD_WIRELESS -> {
-                val port = EnvironmentUtils.getAdbTcpPort()
-                if (port > 0) {
-                    context.startService(Intent(context, StarterService::class.java).apply {
-                        putExtra(StarterService.EXTRA_IS_ROOT, false)
-                        putExtra(StarterService.EXTRA_HOST, "127.0.0.1")
-                        putExtra(StarterService.EXTRA_PORT, port)
-                    })
-                } else {
-                    WadbNotEnabledDialogFragment().show(
-                        context.asActivity<FragmentActivity>().supportFragmentManager
-                    )
+                // [wifi-flow] Real wireless-debugging funnel: mDNS discovery ->
+                // auto-start on the discovered port; auto-enables the WADB toggle
+                // when WRITE_SECURE_SETTINGS is granted; offers the prop port via
+                // the neutral button only when something actually listens there.
+                context.asActivity<FragmentActivity>()?.supportFragmentManager?.let { fm ->
+                    AdbDialogFragment().show(fm)
                 }
             }
             else -> {
