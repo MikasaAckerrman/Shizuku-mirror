@@ -198,44 +198,45 @@ object StarterEngine {
 
     // ---------- discovery helpers ----------
 
-    /** ~1 ms guard: is anything actually LISTENing on this port right now? */
-    fun isPortListening(port: Int): Boolean {
-        if (port !in 1..65535) return false
-        val hex = Integer.toHexString(port)
-        var found = false
-        for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
-            runCatching {
-                File(f).forEachLine { line ->
-                    val parts = line.trim().split(Regex("\\s+"))
-                    if (parts.size >= 4 && parts[3] == "0A" // 0A = LISTEN
-                        && parts[1].substringAfterLast(':').equals(hex, ignoreCase = true)
-                    ) {
-                        found = true
-                    }
-                }
-            }
-            if (found) return true
-        }
-        return false
-    }
-
-    /** [fix-1] Full-range LISTEN scan. 5555 is covered by fastCandidates. */
-    fun listListenPorts(): List<Int> {
-        val ports = HashSet<Int>()
+    /**
+     * Snapshot of ports actually LISTENing, or null when /proc/net/tcp is not
+     * readable by this process. Apps LOSE access to /proc/net on Android 10+
+     * (SELinux proc_net restriction) - proven on-device by "Access denied
+     * finding property" + silent no-op start - so the guard degrades: callers
+     * attempt candidates directly, bounded by tight budgets.
+     */
+    fun listenPorts(): Set<Int>? {
+        val set = HashSet<Int>()
         for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
             try {
                 File(f).forEachLine { line ->
                     val parts = line.trim().split(Regex("\\s+"))
-                    if (parts.size >= 4 && parts[3] == "0A") {
-                        val hex = parts[1].substringAfterLast(':')
-                        val p = hex.toIntOrNull(16)
-                        if (p != null && p in 1..65535) ports.add(p)
+                    if (parts.size >= 4 && parts[3] == "0A") { // 0A = LISTEN
+                        val p = parts[1].substringAfterLast(':').toIntOrNull(16)
+                        if (p != null && p in 1..65535) set.add(p)
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                return null
             }
         }
-        return ports.filter { it != 5555 }.sorted()
+        return set
+    }
+
+    /**
+     * "Should we attempt this port?" guard: true when listening, and ALSO true
+     * when the snapshot is unavailable (unknown) - a direct attempt is bounded
+     * by tight budgets, so attempting is always cheap.
+     */
+    fun isPortListening(port: Int): Boolean {
+        if (port !in 1..65535) return false
+        return listenPorts()?.contains(port) ?: true
+    }
+
+    /** [fix-1] Full-range LISTEN scan; empty when /proc is unreadable. 5555 is covered by fastCandidates. */
+    fun listListenPorts(): List<Int> {
+        val set = listenPorts() ?: return emptyList()
+        return set.filter { it != 5555 }.sorted()
     }
 
     /**
@@ -252,7 +253,12 @@ object StarterEngine {
         ports.add(5555)
         runCatching { EnvironmentUtils.getAdbTlsPort() }.getOrNull()
             ?.takeIf { it in 1..65535 }?.let { ports.add(it) }
-        return ports.filter { isPortListening(it) }
+        // [fix] When /proc is unreadable (Android 10+ apps) the guard cannot
+        // vouch for anything - attempt the candidates directly instead of
+        // filtering them all out (the old behavior that made the start a
+        // silent no-op).
+        val snapshot = listenPorts()
+        return if (snapshot == null) ports.toList() else ports.filter { snapshot.contains(it) }
     }
 
     // ---------- connection ----------
