@@ -19,6 +19,7 @@ import moe.shizuku.manager.AppConstants.EXTRA
 import moe.shizuku.manager.R
 import moe.shizuku.manager.app.AppBarActivity
 import moe.shizuku.manager.databinding.StarterActivityBinding
+import moe.shizuku.manager.home.ProvisioningDialogFragment
 import rikka.lifecycle.Resource
 import rikka.lifecycle.Status
 import rikka.lifecycle.viewModels
@@ -63,6 +64,10 @@ class StarterActivity : AppBarActivity() {
             binding = StarterActivityBinding.inflate(layoutInflater)
             setContentView(binding!!.root)
             binding?.text1?.text = providedOutput
+            when (intent.getStringExtra(StarterService.EXTRA_FAILURE_REASON)) {
+                StarterService.REASON_NO_LISTENER -> showProvisioning(ProvisioningDialogFragment.REASON_NO_LISTENER)
+                StarterService.REASON_UNAUTHORIZED -> showProvisioning(ProvisioningDialogFragment.REASON_UNAUTHORIZED)
+            }
             return
         }
 
@@ -111,10 +116,10 @@ class StarterActivity : AppBarActivity() {
                         message = R.string.start_with_root_failed
                     }
                     is ConnectException -> {
-                        message = R.string.cannot_connect_port
+                        showProvisioning(ProvisioningDialogFragment.REASON_NO_LISTENER)
                     }
                     is SSLProtocolException -> {
-                        message = R.string.adb_pair_required
+                        showProvisioning(ProvisioningDialogFragment.REASON_UNAUTHORIZED)
                     }
                 }
 
@@ -127,6 +132,14 @@ class StarterActivity : AppBarActivity() {
             }
             binding?.text1?.text = output
         }
+    }
+
+    private var provisioningShown = false
+
+    private fun showProvisioning(reason: String) {
+        if (provisioningShown || isFinishing) return
+        provisioningShown = true
+        ProvisioningDialogFragment.show(supportFragmentManager, reason)
     }
 
     private fun finishWithSuccess(showToast: Boolean) {
