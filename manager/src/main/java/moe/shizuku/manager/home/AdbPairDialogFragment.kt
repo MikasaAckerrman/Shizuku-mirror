@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import moe.shizuku.manager.R
 import moe.shizuku.manager.adb.*
 import moe.shizuku.manager.databinding.AdbPairDialogBinding
+import moe.shizuku.manager.starter.StarterActivity
 import rikka.lifecycle.viewModels
 import java.net.ConnectException
 
@@ -109,6 +110,17 @@ class AdbPairDialogFragment : DialogFragment() {
         }
     }
 
+    companion object {
+        private const val ARG_AUTO_RETRY = "auto_retry"
+
+        fun show(fm: FragmentManager, autoRetry: Boolean) {
+            if (fm.isStateSaved) return
+            val fragment = AdbPairDialogFragment()
+            fragment.arguments = Bundle().apply { putBoolean(ARG_AUTO_RETRY, autoRetry) }
+            fragment.show(fm, AdbPairDialogFragment::class.java.simpleName)
+        }
+    }
+
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
 
@@ -127,6 +139,17 @@ class AdbPairDialogFragment : DialogFragment() {
 
         viewModel.result.observe(this) {
             if (it == null) {
+                // [wifi-flow] Optional auto-retry right after a successful pairing.
+                if (arguments?.getBoolean(ARG_AUTO_RETRY) == true) {
+                    val intent = Intent(requireContext(), StarterActivity::class.java).apply {
+                        putExtra(StarterActivity.EXTRA_IS_ROOT, false)
+                        putExtra(StarterActivity.EXTRA_SILENT, true)
+                        putExtra(StarterActivity.EXTRA_HOST, "127.0.0.1")
+                        putExtra(StarterActivity.EXTRA_PORT, 5555)
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    startActivity(intent)
+                }
                 dismissAllowingStateLoss()
             } else {
                 when (it) {
