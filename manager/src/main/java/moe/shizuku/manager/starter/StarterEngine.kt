@@ -150,6 +150,12 @@ object StarterEngine {
     }
 
     /**
+     * Public verify for root starts: binder alive now, otherwise a short
+     * adaptive poll (the server may still be publishing its binder).
+     */
+    fun verifyBinderAlive(): Boolean = verifyStarted(StringBuilder())
+
+    /**
      * Boot-style dispatch: fast candidates + full LISTEN scan, deadline aware.
      * No binder guard and no verify — the caller polls the binder itself
      * (BootCompleteReceiver owns the ANR budget).
