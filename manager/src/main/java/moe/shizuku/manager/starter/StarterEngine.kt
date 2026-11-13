@@ -68,7 +68,7 @@ object StarterEngine {
     sealed class Result {
         object AlreadyRunning : Result()
         data class Started(val port: Int, val elapsedMs: Long) : Result()
-        data class Failure(val failure: Failure, val detail: String?) : Result()
+        data class Failed(val failure: Failure, val detail: String?) : Result()
     }
 
     private enum class Attempt { DISPATCHED, AUTH_REJECTED, NO_CONNECT, ERROR }
@@ -90,7 +90,7 @@ object StarterEngine {
             AdbKeyHolder.get()
         } catch (t: Throwable) {
             Log.w(TAG, "adb key unavailable", t)
-            return Result.Failure(Failure.Error(t), Log.getStackTraceString(t))
+            return Result.Failed(Failure.Error(t), Log.getStackTraceString(t))
         }
 
         val deadline = System.currentTimeMillis() + MANUAL_TOTAL_BUDGET_MS
@@ -121,11 +121,11 @@ object StarterEngine {
                             }
                             onLine("[no root access: use \"Start with root\" to restart the server]")
                         }
-                        return Result.Failure(Failure.ServerDidNotConfirm, output.toString())
+                        return Result.Failed(Failure.ServerDidNotConfirm, output.toString())
                     }
                     Attempt.AUTH_REJECTED -> {
                         markAuthorized(false)
-                        return Result.Failure(Failure.Unauthorized, output.toString())
+                        return Result.Failed(Failure.Unauthorized, output.toString())
                     }
                     Attempt.NO_CONNECT -> {
                         if (port == lastGoodPort()) saveLastGood(-1)
@@ -143,10 +143,10 @@ object StarterEngine {
                 logTiming(t0, -1)
                 return Result.Started(-1, SystemClock.elapsedRealtime() - t0)
             }
-            return Result.Failure(Failure.ServerDidNotConfirm, null)
+            return Result.Failed(Failure.ServerDidNotConfirm, null)
         }
 
-        return Result.Failure(Failure.NoListener, null)
+        return Result.Failed(Failure.NoListener, null)
     }
 
     /**
