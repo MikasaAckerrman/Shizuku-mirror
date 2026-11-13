@@ -143,11 +143,9 @@ class AdbPairingService : Service() {
         GlobalScope.launch(Dispatchers.IO) {
             val host = "127.0.0.1"
 
-            // [chain] Pairing must authorize the SAME key the start engine
-            // uses — otherwise (PREAUTHORIZED_KEY=false) pairing would mint
-            // a different key from legacy prefs and the silent start would
-            // never work. AdbKeyHolder is the single source of the key.
             val key = try {
+                // [chain] Pairing must authorize the SAME key the start engine
+                // uses - AdbKeyHolder is the single source of the key.
                 AdbKeyHolder.get()
             } catch (e: Throwable) {
                 e.printStackTrace()
@@ -241,7 +239,7 @@ class AdbPairingService : Service() {
     }
 
     private val retryNotificationAction by unsafeLazy {
-        val pendingIntent = PendingIntent.getForegroundService(
+        val pendingIntent = PendingIntent.getService(
             this,
             retryRequestId,
             startIntent(this),
@@ -256,6 +254,31 @@ class AdbPairingService : Service() {
             getString(R.string.notification_adb_pairing_retry),
             pendingIntent
         )
+            .build()
+    }
+
+    private val replyNotificationAction by unsafeLazy {
+        val remoteInput = RemoteInput.Builder(remoteInputResultKey).run {
+            setLabel(getString(R.string.dialog_adb_pairing_paring_code))
+            build()
+        }
+
+        val pendingIntent = PendingIntent.getForegroundService(
+            this,
+            replyRequestId,
+            replyIntent(this, -1),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            else
+                PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        Notification.Action.Builder(
+            null,
+            getString(R.string.notification_adb_pairing_input_paring_code),
+            pendingIntent
+        )
+            .addRemoteInput(remoteInput)
             .build()
     }
 
@@ -288,7 +311,6 @@ class AdbPairingService : Service() {
     private fun createInputNotification(port: Int): Notification {
         return Notification.Builder(this, notificationChannel)
             .setColor(getColor(R.color.notification))
-            .setSmallIcon(R.drawable.ic_system_icon)
             .setContentTitle(getString(R.string.notification_adb_pairing_service_found_title))
             .setSmallIcon(R.drawable.ic_system_icon)
             .addAction(replyNotificationAction(port))
@@ -298,7 +320,6 @@ class AdbPairingService : Service() {
     private val workingNotification by unsafeLazy {
         Notification.Builder(this, notificationChannel)
             .setColor(getColor(R.color.notification))
-            .setSmallIcon(R.drawable.ic_system_icon)
             .setContentTitle(getString(R.string.notification_adb_pairing_working_title))
             .setSmallIcon(R.drawable.ic_system_icon)
             .build()
