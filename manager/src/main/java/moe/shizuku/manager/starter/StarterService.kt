@@ -19,11 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import moe.shizuku.manager.R
-import moe.shizuku.manager.ShizukuSettings
-import moe.shizuku.manager.adb.AdbClient
-import moe.shizuku.manager.adb.AdbKey
-import moe.shizuku.manager.adb.AdbKeyException
-import moe.shizuku.manager.adb.PreferenceAdbKeyStore
 import rikka.shizuku.Shizuku
 import java.net.ConnectException
 import javax.net.ssl.SSLProtocolException
@@ -179,7 +174,7 @@ class StarterService : Service() {
                 // [fix] submit() callbacks run on the main thread; the
                 // verification polls with sleeps, so run it on IO.
                 scope.launch(Dispatchers.IO) {
-                    if (shellCode == 0 && verifyServerStarted(sb)) {
+                    if (shellCode == 0 && StarterEngine.verifyBinderAlive()) {
                         finishSuccess()
                     } else {
                         sb.append("Send this to developer may help solve the problem.\n")
@@ -205,74 +200,21 @@ class StarterService : Service() {
             try {
                 // [fix] If a REACHABLE server is running, stop it first
                 // (the user pressed Start to switch modes or to force a
-                // restart). An UNREACHABLE server — a zombie that survived
-                // a soft reboot — is handled by the native starter, which
-                // kills it by name; a ROOT-owned zombie (which the shell
+                // restart). An UNREACHABLE server — a zombie after a soft
+                // reboot — is handled by the native starter, which kills
+                // it by name; a ROOT-owned zombie (which the shell
                 // starter cannot SIGKILL) gets the root-shell fallback
-                // below.
+                // inside the engine.
                 stopExistingServerIfRunning()
 
-                val key = try {
-                AdbKey(PreferenceAdbKeyStore(ShizukuSettings.getPreferences()), "shizuku")
-            } catch (e: Throwable) {
-                e.printStackTrace()
-                sb.append(Log.getStackTraceString(e))
-                finishError(AdbKeyException(e))
-                return@launch
-            }
-
-            var lastError: Throwable? = null
-            var success = false
-            for (attempt in 0 until 3) {
-                if (attempt > 0) {
-                    sb.append("\n[retry ADB connection attempt ${attempt + 1}/3]\n")
-                    Thread.sleep(200)
-                }
-                try {
-                    AdbClient(host, port, key).use { client ->
-                        client.connect()
-                        client.shellCommand(Starter.internalCommand) {
-                            sb.append(String(it))
-                        }
-                    }
-                    // [fix] The ADB session completing does NOT guarantee the
-                    // server is alive. Verify before reporting success, but
-                    // tolerate the case where the binder has not been
-                    // delivered to us yet (server may finish publishing right
-                    // after the shell command returns, or the delivery retry
-                    // may still be pending after a soft reboot).
-                    success = verifyServerStarted(sb)
-                    if (success) break
-                } catch (e: Throwable) {
-                    lastError = e
-                    e.printStackTrace()
-                }
-
-                // [fix] A server started as ROOT cannot be killed by the
-                // ADB (shell) starter — SIGKILL fails with EPERM and every
-                // retry would hit the same wall. If a root shell is
-                // available, stop the zombie ourselves and retry the ADB
-                // start; otherwise tell the user to use "Start with root".
-                if (!success && sb.indexOf(ROOT_ZOMBIE_MARKER) >= 0) {
-                    sb.append('\n')
-                        .append("[the running server was started as root, stopping it via root...]\n")
-                    if (killServerViaRoot()) {
-                        sb.append("[stopped, retrying]\n")
-                        continue
-                    } else {
-                        sb.append("[no root access: use \"Start with root\" to restart the server]\n")
-                        break
+                when (val result = StarterEngine.adbStart(port) { line -> sb.append(line).append('\n') }) {
+                    is StarterEngine.Result.AlreadyRunning -> finishSuccess()
+                    is StarterEngine.Result.Started -> finishSuccess()
+                    is StarterEngine.Result.Failure -> {
+                        sb.append('\n').append(describe(result))
+                        finishError(failureToThrowable(result))
                     }
                 }
-            }
-
-            if (success) {
-                finishSuccess()
-            } else {
-                sb.append('\n').append(Log.getStackTraceString(lastError))
-                sb.append("\nServer did not confirm it is running.\n")
-                finishError(lastError ?: RuntimeException("ADB connection failed after 3 attempts"))
-            }
             } catch (t: Throwable) {
                 // [fix] unexpected failure — must release StarterState.
                 finishError(t)
@@ -280,35 +222,18 @@ class StarterService : Service() {
         }
     }
 
-    /**
-     * Verify the server is really running after a start attempt.
-     *
-     * Success is confirmed by EITHER:
-     * - the native starter reporting "exit with 0" (the ready file appeared
-     *   and the server published its binder), OR
-     * - the binder being reachable from this app (pingBinder).
-     *
-     * We do NOT fail fast: the shell command may return before the starter
-     * finishes waiting for the ready file, and binder delivery to this app
-     * may lag (server delivers via content provider, with retries). Poll
-     * briefly before concluding failure.
-     */
-    private fun verifyServerStarted(output: StringBuilder): Boolean {
-        // Fast path: binder already alive.
-        if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) return true
+    private fun describe(result: StarterEngine.Result.Failure): String = when (result.failure) {
+        StarterEngine.Failure.NoListener -> "No ADB listener found: wireless debugging is off and adbd is not listening on TCP."
+        StarterEngine.Failure.Unauthorized -> "adbd rejected our key: the device does not trust this app yet."
+        StarterEngine.Failure.ServerDidNotConfirm -> "Server did not confirm it is running."
+        is StarterEngine.Failure.Error -> Log.getStackTraceString(result.failure.throwable)
+    }
 
-        // Fast path: starter already reported success in its output.
-        val marker = "info: shizuku_starter exit with 0"
-        if (output.contains(marker)) return true
-
-        // Poll: server may still be publishing / delivering binder.
-        val deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS
-        while (System.currentTimeMillis() < deadline) {
-            Thread.sleep(VERIFY_POLL_MS)
-            if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) return true
-        }
-        // Final verdict from the marker (output may have arrived late).
-        return output.contains(marker)
+    private fun failureToThrowable(result: StarterEngine.Result.Failure): Throwable = when (val f = result.failure) {
+        StarterEngine.Failure.NoListener -> ConnectException("no adbd listener")
+        StarterEngine.Failure.Unauthorized -> SSLProtocolException("adb key not authorized")
+        StarterEngine.Failure.ServerDidNotConfirm -> RuntimeException("Server did not confirm it is running.")
+        is StarterEngine.Failure.Error -> f.throwable
     }
 
     /**
@@ -318,7 +243,7 @@ class StarterService : Service() {
      * working server of another mode is running. A server we cannot reach
      * (a zombie after a soft reboot — its binder delivery is dead even
      * though the process survives) is NOT handled here: the native starter
-     * kills it by name, or the root-shell fallback does.
+     * kills it by name, or the root-shell fallback in the engine does.
      */
     private fun stopExistingServerIfRunning(): Boolean {
         if (!runCatching { Shizuku.pingBinder() }.getOrDefault(false)) return false
@@ -344,44 +269,11 @@ class StarterService : Service() {
         return true
     }
 
-    /**
-     * Kill a running shizuku_server through a ROOT shell. Used when the
-     * server was started as root and the ADB (shell) starter cannot
-     * SIGKILL it (EPERM). Returns false when root is not available.
-     */
-    private fun killServerViaRoot(): Boolean {
-        return try {
-            if (!Shell.getShell().isRoot) return false
-            val pid = Shell.cmd("pidof -s shizuku_server").exec()
-                .out.firstOrNull()?.trim().orEmpty()
-            if (pid.isEmpty()) {
-                true // already gone
-            } else {
-                Shell.cmd("kill -9 $pid").exec().isSuccess
-            }
-        } catch (e: Throwable) {
-            e.printStackTrace()
-            false
-        }
-    }
-
     companion object {
         private const val CHANNEL_ID = "shizuku_starter"
         private const val NOTIFICATION_ID = 1
 
-        // [fix] How long to poll for binder/marker before declaring a
-        // failed start. The native starter itself waits up to 15s for the
-        // ready file, so the poll window here only needs to cover binder
-        // delivery lag (usually well under 5s).
-        private const val VERIFY_TIMEOUT_MS = 8000L
-        private const val VERIFY_POLL_MS = 250L
-
-        // Marker printed by the native starter when SIGKILL fails with
-        // EPERM — the running server was started as a different (root)
-        // user, and a shell-uid starter cannot kill it.
-        private const val ROOT_ZOMBIE_MARKER = "fatal: can't kill"
-
-        // How long to wait for the server to die after Shizuku.exit().
+        // [fix] How long to wait for the server to die after Shizuku.exit().
         private const val STOP_TIMEOUT_MS = 2000L
         private const val STOP_POLL_MS = 100L
 
