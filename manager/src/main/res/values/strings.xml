@@ -173,7 +173,7 @@ With %1$s, in any terminal app, you can connect to and interact with the shell r
 
     <!-- [provisioning] first-time setup -->
     <string name="provisioning_title">Set up access (one time)</string>
-    <string name="provisioning_message">To start Shizuku without root, this app\\'s key must be trusted once. Pick a method:</string>
+    <string name="provisioning_message">To start Shizuku without root, this app\'s key must be trusted once. Pick a method:</string>
     <string name="provisioning_seed_root">Seed via root</string>
     <string name="provisioning_pair_wifi">Pair via Wi-Fi</string>
     <string name="provisioning_working">Working\u2026</string>
