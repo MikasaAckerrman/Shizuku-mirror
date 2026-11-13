@@ -233,7 +233,7 @@ private class ViewModel(context: Context, root: Boolean, host: String?, port: In
                 is StarterEngine.Result.Started -> {
                     appendOutput("Shizuku successfully started")
                 }
-                is StarterEngine.Result.Failure -> {
+                is StarterEngine.Result.Failed -> {
                     sb.append('\n').append(describe(result))
                     postResult(failureToThrowable(result))
                 }
@@ -241,17 +241,19 @@ private class ViewModel(context: Context, root: Boolean, host: String?, port: In
         }
     }
 
-    private fun describe(result: StarterEngine.Result.Failure): String = when (result.failure) {
+    private fun describe(result: StarterEngine.Result.Failed): String = when (result.failure) {
         StarterEngine.Failure.NoListener -> "No ADB listener found: wireless debugging is off and adbd is not listening on TCP."
         StarterEngine.Failure.Unauthorized -> "adbd rejected our key: the device does not trust this app yet."
         StarterEngine.Failure.ServerDidNotConfirm -> "Server did not confirm it is running."
         is StarterEngine.Failure.Error -> Log.getStackTraceString(result.failure.throwable)
+        else -> ""
     }
 
-    private fun failureToThrowable(result: StarterEngine.Result.Failure): Throwable = when (val f = result.failure) {
+    private fun failureToThrowable(result: StarterEngine.Result.Failed): Throwable = when (val f = result.failure) {
         StarterEngine.Failure.NoListener -> ConnectException("no adbd listener")
         StarterEngine.Failure.Unauthorized -> SSLProtocolException("adb key not authorized")
         StarterEngine.Failure.ServerDidNotConfirm -> RuntimeException("Server did not confirm it is running.")
         is StarterEngine.Failure.Error -> f.throwable
+        else -> RuntimeException("unknown start failure")
     }
 }
