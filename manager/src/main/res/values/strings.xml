@@ -178,4 +178,5 @@ With %1$s, in any terminal app, you can connect to and interact with the shell r
     <string name="provisioning_pair_wifi">Pair via Wi-Fi</string>
     <string name="provisioning_working">Working\u2026</string>
     <string name="provisioning_root_unavailable">Root is not available on this device</string>
+    <string name="provisioning_seed_fail">Seeding failed</string>
 </resources>
