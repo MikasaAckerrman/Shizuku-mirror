@@ -19,6 +19,7 @@ import moe.shizuku.manager.R
 import moe.shizuku.manager.adb.AdbMdns
 import moe.shizuku.manager.databinding.AdbDialogBinding
 import moe.shizuku.manager.starter.StarterActivity
+import moe.shizuku.manager.starter.StarterEngine
 import moe.shizuku.manager.utils.EnvironmentUtils
 
 @RequiresApi(Build.VERSION_CODES.R)
@@ -43,7 +44,10 @@ class AdbDialogFragment : DialogFragment() {
             setNegativeButton(android.R.string.cancel, null)
             setPositiveButton(R.string.development_settings, null)
 
-            if (port != -1) {
+            // [fast-path] Only offer the prop hint as a button when something
+            // is ACTUALLY listening there: a stale persist.adb.tcp.port with a
+            // dead listener caused the 3x10 s ECONNREFUSED storm.
+            if (port != -1 && StarterEngine.isPortListening(port)) {
                 setNeutralButton("$port", null)
             }
         }
@@ -79,7 +83,10 @@ class AdbDialogFragment : DialogFragment() {
         }
 
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
-            startAndDismiss(EnvironmentUtils.getAdbTcpPort())
+            val port = EnvironmentUtils.getAdbTcpPort()
+            if (port != -1 && StarterEngine.isPortListening(port)) {
+                startAndDismiss(port)
+            }
         }
 
         port.observe(this) {

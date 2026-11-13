@@ -1,8 +1,9 @@
 package moe.shizuku.manager.starter
 
-import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.widget.Toast
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.lifecycleScope
@@ -14,15 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.view.View
-import android.widget.Toast
 import moe.shizuku.manager.AppConstants.EXTRA
 import moe.shizuku.manager.R
-import moe.shizuku.manager.ShizukuSettings
-import moe.shizuku.manager.adb.AdbClient
-import moe.shizuku.manager.adb.AdbKey
-import moe.shizuku.manager.adb.AdbKeyException
-import moe.shizuku.manager.adb.PreferenceAdbKeyStore
 import moe.shizuku.manager.app.AppBarActivity
 import moe.shizuku.manager.databinding.StarterActivityBinding
 import rikka.lifecycle.Resource
@@ -32,6 +26,7 @@ import rikka.shizuku.Shizuku
 import java.net.ConnectException
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLProtocolException
+import android.content.Context
 
 private class NotRootedException : Exception()
 
@@ -112,9 +107,6 @@ class StarterActivity : AppBarActivity() {
 
                 var message = 0
                 when (it.error) {
-                    is AdbKeyException -> {
-                        message = R.string.adb_error_key_store
-                    }
                     is NotRootedException -> {
                         message = R.string.start_with_root_failed
                     }
@@ -232,54 +224,34 @@ private class ViewModel(context: Context, root: Boolean, host: String?, port: In
         postResult()
 
         viewModelScope.launch(Dispatchers.IO) {
-            // [fix-12] Don't kill a healthy server: the starter binary
-            // SIGKILLs every shizuku_server process before forking a new one,
-            // so pressing "Start" while the service is already up would
-            // disconnect all active clients for no reason.
-            if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) {
-                sb.append('\n').append("Service is already running, nothing to do.")
-                postResult()
-                return@launch
-            }
-
-            val key = try {
-                AdbKey(PreferenceAdbKeyStore(ShizukuSettings.getPreferences()), "shizuku")
-            } catch (e: Throwable) {
-                e.printStackTrace()
-                sb.append('\n').append(Log.getStackTraceString(e))
-
-                postResult(AdbKeyException(e))
-                return@launch
-            }
-
-            var lastError: Throwable? = null
-            var success = false
-            for (attempt in 0 until 3) {
-                if (attempt > 0) {
-                    sb.append("\n[retry ADB connection attempt ${attempt + 1}/3]\n")
-                    postResult()
-                    Thread.sleep(200)
+            // Engine owns the ping guard, fast path, discovery, zombie
+            // fallback and verify. This activity just renders the output.
+            when (val result = StarterEngine.adbStart(port) { line -> appendOutput(line) }) {
+                is StarterEngine.Result.AlreadyRunning -> {
+                    appendOutput("Shizuku successfully started")
                 }
-                try {
-                    AdbClient(host, port, key).use { client ->
-                        client.connect()
-                        client.shellCommand(Starter.internalCommand) {
-                            sb.append(String(it))
-                            postResult()
-                        }
-                    }
-                    success = true
-                    break
-                } catch (e: Throwable) {
-                    lastError = e
-                    e.printStackTrace()
+                is StarterEngine.Result.Started -> {
+                    appendOutput("Shizuku successfully started")
                 }
-            }
-
-            if (!success) {
-                sb.append('\n').append(Log.getStackTraceString(lastError))
-                postResult(lastError ?: RuntimeException("ADB connection failed after 3 attempts"))
+                is StarterEngine.Result.Failure -> {
+                    sb.append('\n').append(describe(result))
+                    postResult(failureToThrowable(result))
+                }
             }
         }
+    }
+
+    private fun describe(result: StarterEngine.Result.Failure): String = when (result.failure) {
+        StarterEngine.Failure.NoListener -> "No ADB listener found: wireless debugging is off and adbd is not listening on TCP."
+        StarterEngine.Failure.Unauthorized -> "adbd rejected our key: the device does not trust this app yet."
+        StarterEngine.Failure.ServerDidNotConfirm -> "Server did not confirm it is running."
+        is StarterEngine.Failure.Error -> Log.getStackTraceString(result.failure.throwable)
+    }
+
+    private fun failureToThrowable(result: StarterEngine.Result.Failure): Throwable = when (val f = result.failure) {
+        StarterEngine.Failure.NoListener -> ConnectException("no adbd listener")
+        StarterEngine.Failure.Unauthorized -> SSLProtocolException("adb key not authorized")
+        StarterEngine.Failure.ServerDidNotConfirm -> RuntimeException("Server did not confirm it is running.")
+        is StarterEngine.Failure.Error -> f.throwable
     }
 }
