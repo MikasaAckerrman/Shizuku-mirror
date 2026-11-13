@@ -64,4 +64,23 @@ object TrustSeeder {
         onLine?.invoke(if (ok) "Trust seeded into $ADB_KEYS" else "Seed failed (exit ${result.code})")
         return ok
     }
+
+    /**
+     * [root-window] Make adbd listen on the conventional TCP port forever:
+     * persist.adb.tcp.port survives reboot (init applies it on ROMs that
+     * honor persist props, e.g. vivo OriginOS), service.adb.tcp.port applies
+     * immediately after the adbd restart below. Restarting adbd also makes
+     * it re-read adb_keys, picking up a freshly seeded key.
+     */
+    fun fixTcpPortViaRoot(): Boolean {
+        val result = Shell.cmd(
+            "setprop persist.adb.tcp.port 5555",
+            "setprop service.adb.tcp.port 5555",
+            "stop adbd",
+            "sleep 1",
+            "start adbd"
+        ).exec()
+        Log.i(TAG, "fixTcpPortViaRoot: code=${result.code}")
+        return result.isSuccess
+    }
 }
