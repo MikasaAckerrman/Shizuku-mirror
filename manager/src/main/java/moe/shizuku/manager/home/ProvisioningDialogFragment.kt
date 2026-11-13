@@ -1,6 +1,7 @@
 package moe.shizuku.manager.home
 
 import android.app.Dialog
+import androidx.fragment.app.DialogFragment
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
