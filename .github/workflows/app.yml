@@ -40,15 +40,21 @@ jobs:
           build-scan-terms-of-use-url: "https://gradle.com/terms-of-service"
           build-scan-terms-of-use-agree: "yes"
       - name: Build with Gradle
-        id: buildWithGradle
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
           echo 'android.sdk.channel=3' >> gradle.properties
           echo 'android.native.buildOutput=verbose' >> gradle.properties
           echo 'org.gradle.caching=true' >> gradle.properties
           echo 'org.gradle.parallel=true' >> gradle.properties
-          ./gradlew :manager:assemble
-          releaseName=`ls manager/build/outputs/apk/release/shizuku*-v*-release.apk | awk -F '(/|-release.apk)' '{print $6}'` && echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
+          # [fast-tests] branches build debug-only (no R8/shrinkResources, single
+          # native variant, timing logs active); master builds the full release.
+          if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            echo "Building FULL release (master)"
+            ./gradlew :manager:assembleRelease
+          else
+            echo "Building FAST debug (test branch)"
+            ./gradlew :manager:assembleDebug
+          fi
       - name: Upload APK as release asset
         if: success()
         env:
@@ -57,7 +63,8 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_NUM: ${{ github.run_number }}
         run: |
-          APK=$(ls manager/build/outputs/apk/release/shizuku*-v*-release.apk | head -1)
+          APK=$(ls manager/build/outputs/apk/debug/shizuku*-debug.apk 2>/dev/null | head -1)
+          [ -z "$APK" ] && APK=$(ls manager/build/outputs/apk/release/shizuku*-v*-release.apk | head -1)
           echo "APK: $APK"
           RELEASE_ID=$(curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
