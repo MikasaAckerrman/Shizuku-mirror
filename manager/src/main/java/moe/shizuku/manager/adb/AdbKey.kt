@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.content.edit
 import moe.shizuku.manager.BuildConfig
+import moe.shizuku.manager.utils.EmptySharedPreferencesImpl
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.cert.X509v3CertificateBuilder
@@ -191,11 +192,11 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
                 val keyFactory = KeyFactory.getInstance("RSA")
                 privateKey = keyFactory.generatePrivate(PKCS8EncodedKeySpec(plaintext)) as RSAPrivateKey
             } catch (e: Exception) {
-                // Ciphertext unreadable (e.g. restored from a backup onto a
-                // different device: the AndroidKeyStore key does not migrate).
-                // Drop it so a fresh key is generated below.
-                Log.w(TAG, "Stored adb key unreadable, regenerating")
-                runCatching { adbKeyStore.put(ByteArray(0)) }
+                // Do NOT wipe the stored ciphertext here: a transient Keystore
+                // failure must not destroy a trusted key. If the key is really
+                // gone (e.g. restored on another device), the fresh key below
+                // overwrites the entry anyway, and provisioning simply runs again.
+                Log.w(TAG, "Stored adb key unreadable: ${e.message}")
             }
         }
         if (privateKey == null) {
@@ -359,14 +360,22 @@ object AdbKeyHolder {
         } else {
             context
         }
-        val prefs = de.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = try {
+            de.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        } catch (e: IllegalStateException) {
+            // Storage not readable yet (Direct Boot) — parity with the
+            // ShizukuSettings wrapper.
+            EmptySharedPreferencesImpl()
+        }
         // One-time migration of the encrypted key from the legacy "settings"
         // prefs, so devices that already trust the old key keep working.
-        if (!prefs.contains("adbkey")) {
-            val legacy = de.getSharedPreferences("settings", Context.MODE_PRIVATE)
-            legacy.getString("adbkey", null)?.let { legacyValue ->
-                prefs.edit().putString("adbkey", legacyValue).apply()
-                legacy.edit().remove("adbkey").apply()
+        runCatching {
+            if (!prefs.contains("adbkey")) {
+                val legacy = de.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                legacy.getString("adbkey", null)?.let { legacyValue ->
+                    prefs.edit().putString("adbkey", legacyValue).apply()
+                    legacy.edit().remove("adbkey").apply()
+                }
             }
         }
         return AdbKey(PreferenceAdbKeyStore(prefs), "shizuku")
