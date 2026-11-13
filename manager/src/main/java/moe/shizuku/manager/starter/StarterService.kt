@@ -127,7 +127,7 @@ class StarterService : Service() {
         }
     }
 
-    private fun finishError(throwable: Throwable) {
+    private fun finishError(throwable: Throwable, failureReason: String? = null) {
         StarterState.setStarting(false)
         updateNotification("Shizuku failed - tap for details", false)
         val intent = Intent(this, StarterActivity::class.java).apply {
@@ -135,6 +135,7 @@ class StarterService : Service() {
             putExtra(StarterActivity.EXTRA_IS_ROOT, false)
             putExtra(StarterActivity.EXTRA_SILENT, false)
             putExtra(StarterActivity.EXTRA_OUTPUT, sb.toString())
+            failureReason?.let { putExtra(EXTRA_FAILURE_REASON, it) }
         }
         startActivity(intent)
         stopSelf()
@@ -212,7 +213,7 @@ class StarterService : Service() {
                     is StarterEngine.Result.Started -> finishSuccess()
                     is StarterEngine.Result.Failed -> {
                         sb.append('\n').append(describe(result))
-                        finishError(failureToThrowable(result))
+                        finishError(failureToThrowable(result), reasonName(result))
                     }
                 }
             } catch (t: Throwable) {
@@ -228,6 +229,12 @@ class StarterService : Service() {
         StarterEngine.Failure.ServerDidNotConfirm -> "Server did not confirm it is running."
         is StarterEngine.Failure.Error -> Log.getStackTraceString(result.failure.throwable)
         else -> ""
+    }
+
+    private fun reasonName(result: StarterEngine.Result.Failed): String? = when (result.failure) {
+        StarterEngine.Failure.NoListener -> REASON_NO_LISTENER
+        StarterEngine.Failure.Unauthorized -> REASON_UNAUTHORIZED
+        else -> null
     }
 
     private fun failureToThrowable(result: StarterEngine.Result.Failed): Throwable = when (val f = result.failure) {
@@ -278,6 +285,10 @@ class StarterService : Service() {
         // [fix] How long to wait for the server to die after Shizuku.exit().
         private const val STOP_TIMEOUT_MS = 2000L
         private const val STOP_POLL_MS = 100L
+
+        const val EXTRA_FAILURE_REASON = "moe.shizuku.manager.starter.EXTRA_FAILURE_REASON"
+        const val REASON_NO_LISTENER = "no_listener"
+        const val REASON_UNAUTHORIZED = "unauthorized"
 
         const val EXTRA_IS_ROOT = "moe.shizuku.manager.starter.EXTRA_IS_ROOT"
         const val EXTRA_HOST = "moe.shizuku.manager.starter.EXTRA_HOST"
