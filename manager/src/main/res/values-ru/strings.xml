@@ -136,4 +136,11 @@
 \n
 \nВозможно Вам понадобится перезапустить Shizuku для применения изменений.</string>
     <string name="home_adb_is_limited_title">Нужен дополнительный шаг</string>
+    <!-- [provisioning] first-time setup -->
+    <string name="provisioning_title">Настройка доступа (один раз)</string>
+    <string name="provisioning_message">Чтобы запускать Shizuku без рута, ключу приложения нужно один раз дать доверие. Выберите способ:</string>
+    <string name="provisioning_seed_root">Посеять через root</string>
+    <string name="provisioning_pair_wifi">Спарить по Wi-Fi</string>
+    <string name="provisioning_working">Работаю…</string>
+    <string name="provisioning_root_unavailable">Root на этом устройстве недоступен</string>
 </resources>
