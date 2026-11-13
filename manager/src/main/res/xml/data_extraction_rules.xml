@@ -4,10 +4,24 @@
         <include
             domain="sharedpref"
             path="settings.xml" />
+        <!-- [security] never back up the encrypted ADB key -->
+        <exclude
+            domain="sharedpref"
+            path="adbkey_store.xml" />
+        <exclude
+            domain="device"
+            path="shared_prefs/adbkey_store.xml" />
     </cloud-backup>
     <device-transfer>
         <include
             domain="sharedpref"
             path="settings.xml" />
+        <!-- [security] never transfer the encrypted ADB key -->
+        <exclude
+            domain="sharedpref"
+            path="adbkey_store.xml" />
+        <exclude
+            domain="device"
+            path="shared_prefs/adbkey_store.xml" />
     </device-transfer>
 </data-extraction-rules>

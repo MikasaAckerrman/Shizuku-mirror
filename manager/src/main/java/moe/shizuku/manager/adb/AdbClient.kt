@@ -31,7 +31,10 @@ class AdbClient(
     private val port: Int,
     private val key: AdbKey,
     /** [fix-10] Per-instance read budget: scan candidates get a short one. */
-    private val readTimeoutMs: Int = READ_TIMEOUT_MS
+    private val readTimeoutMs: Int = READ_TIMEOUT_MS,
+    /** [fast-path] Per-instance connect budget: localhost adbd answers in <1 ms,
+     *  so a fast first attempt must not wait the full 10 s on a dead port. */
+    private val connectTimeoutMs: Int = CONNECT_TIMEOUT_MS
 ) : Closeable {
 
     companion object {
@@ -65,7 +68,7 @@ class AdbClient(
         // boot autostart retry loop on attempt 1.
         socket = Socket()
         socket.tcpNoDelay = true
-        socket.connect(java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+        socket.connect(java.net.InetSocketAddress(host, port), connectTimeoutMs)
         socket.soTimeout = readTimeoutMs
         plainInputStream = DataInputStream(socket.getInputStream())
         plainOutputStream = DataOutputStream(socket.getOutputStream())

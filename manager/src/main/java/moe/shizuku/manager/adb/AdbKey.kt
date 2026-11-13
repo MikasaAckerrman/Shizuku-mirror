@@ -1,6 +1,7 @@
 package moe.shizuku.manager.adb
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
@@ -9,6 +10,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.content.edit
+import moe.shizuku.manager.BuildConfig
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.cert.X509v3CertificateBuilder
@@ -98,12 +100,16 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
         ).build(signer)
         this.certificate = CertificateFactory.getInstance("X.509")
                 .generateCertificate(ByteArrayInputStream(x509Certificate.encoded)) as X509Certificate
-
-        Log.d(TAG, privateKey.toString())
     }
 
     val adbPublicKey: ByteArray by unsafeLazy {
         publicKey.adbEncoded(name)
+    }
+
+    /** Public key formatted as a /data/misc/adb/adb_keys line: "<base64> shizuku\n" */
+    val adbPublicKeyLine: String by unsafeLazy {
+        val pub = adbPublicKey
+        String(pub, 0, pub.size - 1) + "\n"
     }
 
     private fun getOrCreateEncryptionKey(): Key? {
@@ -150,19 +156,26 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
         // [port] Bundled pre-authorized key (assets/adbkey.der): the matching public
         // key is already present in this device's /data/misc/adb/adb_keys, so the
         // connection succeeds silently without any USB-debugging dialog.
-        try {
-            appContext?.assets?.open("adbkey.der")?.use { input ->
-                val bytes = input.readBytes()
-                if (bytes.size > 100) {
-                    val key = KeyFactory.getInstance("RSA")
-                        .generatePrivate(PKCS8EncodedKeySpec(bytes)) as RSAPrivateKey
-                    runCatching { adbKeyStore.put(encrypt(bytes, "adbkey".toByteArray()) ?: bytes) }
-                    Log.i(TAG, "Using bundled pre-authorized ADB key")
-                    return key
+        //
+        // [security] Gated behind BuildConfig.PREAUTHORIZED_KEY. The private key
+        // inside the APK is extractable by ANY app on the device (base.apk is
+        // world-readable), so public/distributed builds MUST set the flag to
+        // false and use the per-device generated key below instead.
+        if (BuildConfig.PREAUTHORIZED_KEY) {
+            try {
+                appContext?.assets?.open("adbkey.der")?.use { input ->
+                    val bytes = input.readBytes()
+                    if (bytes.size > 100) {
+                        val key = KeyFactory.getInstance("RSA")
+                            .generatePrivate(PKCS8EncodedKeySpec(bytes)) as RSAPrivateKey
+                        runCatching { adbKeyStore.put(encrypt(bytes, "adbkey".toByteArray()) ?: bytes) }
+                        Log.i(TAG, "Using bundled pre-authorized ADB key")
+                        return key
+                    }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Bundled ADB key not available: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Bundled ADB key not available: ${e.message}")
         }
 
         var privateKey: RSAPrivateKey? = null
@@ -178,6 +191,11 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
                 val keyFactory = KeyFactory.getInstance("RSA")
                 privateKey = keyFactory.generatePrivate(PKCS8EncodedKeySpec(plaintext)) as RSAPrivateKey
             } catch (e: Exception) {
+                // Ciphertext unreadable (e.g. restored from a backup onto a
+                // different device: the AndroidKeyStore key does not migrate).
+                // Drop it so a fresh key is generated below.
+                Log.w(TAG, "Stored adb key unreadable, regenerating")
+                runCatching { adbKeyStore.put(ByteArray(0)) }
             }
         }
         if (privateKey == null) {
@@ -227,7 +245,7 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
                 return null
             }
 
-            override fun getServerAliases(keyType: String, issuers: Array<out Principal>?): Array<String>? {
+            override fun getServerAliases(keyType: String, issuers: Array<out Principal>?, socket: Socket?): Array<String>? {
                 return null
             }
 
@@ -300,54 +318,57 @@ class PreferenceAdbKeyStore(private val preference: SharedPreferences) : AdbKeyS
     }
 }
 
-const val ANDROID_PUBKEY_MODULUS_SIZE = 2048 / 8
-const val ANDROID_PUBKEY_MODULUS_SIZE_WORDS = ANDROID_PUBKEY_MODULUS_SIZE / 4
-const val RSAPublicKey_Size = 524
+/**
+ * [security] Process-wide holder of the ADB key.
+ *
+ * The key is constructed once and kept in RAM only. On disk it exists solely
+ * as an AES-256-GCM ciphertext (encrypted by an AndroidKeyStore, hardware
+ * backed, non-extractable key) inside the app-private, device-protected
+ * preferences file "adbkey_store" — which is excluded from Android backup
+ * so the key material never leaves the device.
+ *
+ * Construction is also off the start hot path: pregenerate() is called from
+ * Application onCreate so the first "Start" press does not pay keygen/decrypt.
+ */
+object AdbKeyHolder {
 
-private fun BigInteger.toAdbEncoded(): IntArray {
-    // little-endian integer with padding zeros in the end
+    private const val PREFS_NAME = "adbkey_store"
 
-    val endcoded = IntArray(ANDROID_PUBKEY_MODULUS_SIZE_WORDS)
-    val r32 = BigInteger.ZERO.setBit(32)
+    @Volatile
+    private var cached: AdbKey? = null
 
-    var tmp = this.add(BigInteger.ZERO)
-    for (i in 0 until ANDROID_PUBKEY_MODULUS_SIZE_WORDS) {
-        val out = tmp.divideAndRemainder(r32)
-        tmp = out[0]
-        endcoded[i] = out[1].toInt()
+    private val lock = Any()
+
+    fun get(): AdbKey = synchronized(lock) {
+        cached ?: create().also { cached = it }
     }
-    return endcoded
-}
 
-private fun RSAPublicKey.adbEncoded(name: String): ByteArray {
-    // https://cs.android.com/android/platform/superproject/+/android-10.0.0_r30:system/core/libcrypto_utils/android_pubkey.c
+    /** Drop the cached instance (e.g. after a decrypt/auth failure) so the
+     *  next get() re-reads / regenerates the key. */
+    fun invalidate() = synchronized(lock) { cached = null }
 
-    /*
-    typedef struct RSAPublicKey {
-        uint32_t modulus_size_words; // ANDROID_PUBKEY_MODULUS_SIZE
-        uint32_t n0inv; // n0inv = -1 / N[0] mod 2^32
-        uint8_t modulus[ANDROID_PUBKEY_MODULUS_SIZE];
-        uint8_t rr[ANDROID_PUBKEY_MODULUS_SIZE]; // rr = (2^(rsa_size)) ^ 2 mod N
-        uint32_t exponent;
-    } RSAPublicKey;
-    */
+    /** Warm up the key off the hot path. */
+    fun pregenerate() {
+        runCatching { get() }
+    }
 
-    val r32 = BigInteger.ZERO.setBit(32)
-    val n0inv = modulus.remainder(r32).modInverse(r32).negate()
-    val r = BigInteger.ZERO.setBit(ANDROID_PUBKEY_MODULUS_SIZE * 8)
-    val rr = r.modPow(BigInteger.valueOf(2), modulus)
-
-    val buffer = ByteBuffer.allocate(RSAPublicKey_Size).order(ByteOrder.LITTLE_ENDIAN)
-    buffer.putInt(ANDROID_PUBKEY_MODULUS_SIZE_WORDS)
-    buffer.putInt(n0inv.toInt())
-    modulus.toAdbEncoded().forEach { buffer.putInt(it) }
-    rr.toAdbEncoded().forEach { buffer.putInt(it) }
-    buffer.putInt(publicExponent.toInt())
-
-    val base64Bytes = Base64.encode(buffer.array(), Base64.NO_WRAP)
-    val nameBytes = " $name\u0000".toByteArray()
-    val bytes = ByteArray(base64Bytes.size + nameBytes.size)
-    base64Bytes.copyInto(bytes)
-    nameBytes.copyInto(bytes, base64Bytes.size)
-    return bytes
+    private fun create(): AdbKey {
+        val context = requireNotNull(AdbKey.appContext) { "AdbKey.appContext is not initialized" }
+        val de = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            context.createDeviceProtectedStorageContext()
+        } else {
+            context
+        }
+        val prefs = de.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // One-time migration of the encrypted key from the legacy "settings"
+        // prefs, so devices that already trust the old key keep working.
+        if (!prefs.contains("adbkey")) {
+            val legacy = de.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            legacy.getString("adbkey", null)?.let { legacyValue ->
+                prefs.edit().putString("adbkey", legacyValue).apply()
+                legacy.edit().remove("adbkey").apply()
+            }
+        }
+        return AdbKey(PreferenceAdbKeyStore(prefs), "shizuku")
+    }
 }

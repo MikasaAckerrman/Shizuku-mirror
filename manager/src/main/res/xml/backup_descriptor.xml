@@ -3,4 +3,10 @@
     <include
         domain="sharedpref"
         path="settings.xml" />
+    <!-- [security] never back up the encrypted ADB key: the AndroidKeyStore
+         key that decrypts it does not migrate, so the blob is useless on a
+         restored device — and key material must not leave the device. -->
+    <exclude
+        domain="sharedpref"
+        path="adbkey_store.xml" />
 </full-backup-content>
