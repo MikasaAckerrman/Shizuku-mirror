@@ -38,6 +38,12 @@ class ShizukuApplication : Application() {
         application = this
         init(this)
         moe.shizuku.manager.adb.AdbKey.appContext = this
+        // [fast-path] Warm the ADB key off the start hot path: keygen/decrypt
+        // (~0.1-1 s on a fresh install) must never run inside a Start press.
+        // Daemon thread: result is picked up lazily by AdbKeyHolder.get().
+        kotlin.concurrent.thread(name = "adbkey-pregen", isDaemon = true) {
+            runCatching { moe.shizuku.manager.adb.AdbKeyHolder.pregenerate() }
+        }
         Trace.endSection()
     }
 
