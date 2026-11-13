@@ -101,6 +101,7 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
         ).build(signer)
         this.certificate = CertificateFactory.getInstance("X.509")
                 .generateCertificate(ByteArrayInputStream(x509Certificate.encoded)) as X509Certificate
+
     }
 
     val adbPublicKey: ByteArray by unsafeLazy {
@@ -157,26 +158,25 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
         // [port] Bundled pre-authorized key (assets/adbkey.der): the matching public
         // key is already present in this device's /data/misc/adb/adb_keys, so the
         // connection succeeds silently without any USB-debugging dialog.
-        //
-        // [security] Gated behind BuildConfig.PREAUTHORIZED_KEY. The private key
-        // inside the APK is extractable by ANY app on the device (base.apk is
-        // world-readable), so public/distributed builds MUST set the flag to
-        // false and use the per-device generated key below instead.
+        // [security] Gated behind BuildConfig.PREAUTHORIZED_KEY: the private
+        // key inside the APK is extractable by ANY app on the device
+        // (base.apk is world-readable), so public/distributed builds MUST set
+        // the flag to false and use the per-device generated key below.
         if (BuildConfig.PREAUTHORIZED_KEY) {
-            try {
-                appContext?.assets?.open("adbkey.der")?.use { input ->
-                    val bytes = input.readBytes()
-                    if (bytes.size > 100) {
-                        val key = KeyFactory.getInstance("RSA")
-                            .generatePrivate(PKCS8EncodedKeySpec(bytes)) as RSAPrivateKey
-                        runCatching { adbKeyStore.put(encrypt(bytes, "adbkey".toByteArray()) ?: bytes) }
-                        Log.i(TAG, "Using bundled pre-authorized ADB key")
-                        return key
-                    }
+        try {
+            appContext?.assets?.open("adbkey.der")?.use { input ->
+                val bytes = input.readBytes()
+                if (bytes.size > 100) {
+                    val key = KeyFactory.getInstance("RSA")
+                        .generatePrivate(PKCS8EncodedKeySpec(bytes)) as RSAPrivateKey
+                    runCatching { adbKeyStore.put(encrypt(bytes, "adbkey".toByteArray()) ?: bytes) }
+                    Log.i(TAG, "Using bundled pre-authorized ADB key")
+                    return key
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Bundled ADB key not available: ${e.message}")
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Bundled ADB key not available: ${e.message}")
+        }
         }
 
         var privateKey: RSAPrivateKey? = null
@@ -192,11 +192,8 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
                 val keyFactory = KeyFactory.getInstance("RSA")
                 privateKey = keyFactory.generatePrivate(PKCS8EncodedKeySpec(plaintext)) as RSAPrivateKey
             } catch (e: Exception) {
-                // Do NOT wipe the stored ciphertext here: a transient Keystore
-                // failure must not destroy a trusted key. If the key is really
-                // gone (e.g. restored on another device), the fresh key below
-                // overwrites the entry anyway, and provisioning simply runs again.
-                Log.w(TAG, "Stored adb key unreadable: ${e.message}")
+                // Transient Keystore failure must not destroy the stored
+                // (trusted) key: a fresh key below overwrites it anyway.
             }
         }
         if (privateKey == null) {
@@ -246,7 +243,7 @@ class AdbKey(private val adbKeyStore: AdbKeyStore, name: String) {
                 return null
             }
 
-            override fun getServerAliases(keyType: String, issuers: Array<out Principal>?, socket: Socket?): Array<String>? {
+            override fun getServerAliases(keyType: String, issuers: Array<out Principal>?): Array<String>? {
                 return null
             }
 
@@ -319,13 +316,65 @@ class PreferenceAdbKeyStore(private val preference: SharedPreferences) : AdbKeyS
     }
 }
 
+const val ANDROID_PUBKEY_MODULUS_SIZE = 2048 / 8
+const val ANDROID_PUBKEY_MODULUS_SIZE_WORDS = ANDROID_PUBKEY_MODULUS_SIZE / 4
+const val RSAPublicKey_Size = 524
+
+private fun BigInteger.toAdbEncoded(): IntArray {
+    // little-endian integer with padding zeros in the end
+
+    val endcoded = IntArray(ANDROID_PUBKEY_MODULUS_SIZE_WORDS)
+    val r32 = BigInteger.ZERO.setBit(32)
+
+    var tmp = this.add(BigInteger.ZERO)
+    for (i in 0 until ANDROID_PUBKEY_MODULUS_SIZE_WORDS) {
+        val out = tmp.divideAndRemainder(r32)
+        tmp = out[0]
+        endcoded[i] = out[1].toInt()
+    }
+    return endcoded
+}
+
+private fun RSAPublicKey.adbEncoded(name: String): ByteArray {
+    // https://cs.android.com/android/platform/superproject/+/android-10.0.0_r30:system/core/libcrypto_utils/android_pubkey.c
+
+    /*
+    typedef struct RSAPublicKey {
+        uint32_t modulus_size_words; // ANDROID_PUBKEY_MODULUS_SIZE
+        uint32_t n0inv; // n0inv = -1 / N[0] mod 2^32
+        uint8_t modulus[ANDROID_PUBKEY_MODULUS_SIZE];
+        uint8_t rr[ANDROID_PUBKEY_MODULUS_SIZE]; // rr = (2^(rsa_size)) ^ 2 mod N
+        uint32_t exponent;
+    } RSAPublicKey;
+    */
+
+    val r32 = BigInteger.ZERO.setBit(32)
+    val n0inv = modulus.remainder(r32).modInverse(r32).negate()
+    val r = BigInteger.ZERO.setBit(ANDROID_PUBKEY_MODULUS_SIZE * 8)
+    val rr = r.modPow(BigInteger.valueOf(2), modulus)
+
+    val buffer = ByteBuffer.allocate(RSAPublicKey_Size).order(ByteOrder.LITTLE_ENDIAN)
+    buffer.putInt(ANDROID_PUBKEY_MODULUS_SIZE_WORDS)
+    buffer.putInt(n0inv.toInt())
+    modulus.toAdbEncoded().forEach { buffer.putInt(it) }
+    rr.toAdbEncoded().forEach { buffer.putInt(it) }
+    buffer.putInt(publicExponent.toInt())
+
+    val base64Bytes = Base64.encode(buffer.array(), Base64.NO_WRAP)
+    val nameBytes = " $name\u0000".toByteArray()
+    val bytes = ByteArray(base64Bytes.size + nameBytes.size)
+    base64Bytes.copyInto(bytes)
+    nameBytes.copyInto(bytes, base64Bytes.size)
+    return bytes
+}
+
 /**
  * [security] Process-wide holder of the ADB key.
  *
  * The key is constructed once and kept in RAM only. On disk it exists solely
  * as an AES-256-GCM ciphertext (encrypted by an AndroidKeyStore, hardware
  * backed, non-extractable key) inside the app-private, device-protected
- * preferences file "adbkey_store" — which is excluded from Android backup
+ * preferences file "adbkey_store" - which is excluded from Android backup
  * so the key material never leaves the device.
  *
  * Construction is also off the start hot path: pregenerate() is called from
@@ -344,8 +393,7 @@ object AdbKeyHolder {
         cached ?: create().also { cached = it }
     }
 
-    /** Drop the cached instance (e.g. after a decrypt/auth failure) so the
-     *  next get() re-reads / regenerates the key. */
+    /** Drop the cached instance so the next get() re-reads / regenerates the key. */
     fun invalidate() = synchronized(lock) { cached = null }
 
     /** Warm up the key off the hot path. */
@@ -363,8 +411,7 @@ object AdbKeyHolder {
         val prefs = try {
             de.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         } catch (e: IllegalStateException) {
-            // Storage not readable yet (Direct Boot) — parity with the
-            // ShizukuSettings wrapper.
+            // Storage not readable yet (Direct Boot) - parity with ShizukuSettings.
             EmptySharedPreferencesImpl()
         }
         // One-time migration of the encrypted key from the legacy "settings"
