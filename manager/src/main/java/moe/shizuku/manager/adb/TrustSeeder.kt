@@ -81,6 +81,15 @@ object TrustSeeder {
             "start adbd"
         ).exec()
         Log.i(TAG, "fixTcpPortViaRoot: code=${result.code}")
-        return result.isSuccess
+        // Verify: adbd needs a moment to bind, and the OriginOS wireless-debug
+        // controller has been observed resetting the prop. Re-set if it slipped.
+        repeat(5) {
+            val port = Shell.cmd("getprop service.adb.tcp.port").exec()
+                .out.firstOrNull()?.trim()
+            if (port == "5555") return true
+            Shell.cmd("setprop service.adb.tcp.port 5555").exec()
+            Thread.sleep(500)
+        }
+        return false
     }
 }
