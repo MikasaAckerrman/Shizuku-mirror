@@ -1,11 +1,13 @@
 package moe.shizuku.manager.starter
 
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.topjohnwu.superuser.Shell
 import moe.shizuku.manager.BuildConfig
 import moe.shizuku.manager.ShizukuSettings
 import moe.shizuku.manager.adb.AdbClient
+import moe.shizuku.manager.adb.AdbMdns
 import moe.shizuku.manager.adb.AdbKey
 import moe.shizuku.manager.adb.AdbKeyHolder
 import moe.shizuku.manager.utils.EnvironmentUtils
@@ -136,7 +138,33 @@ object StarterEngine {
             }
         }
 
-        // Stage B — full discovery (deadline-aware, shared with boot path).
+        // Stage B — targeted WADB discovery: while the wireless-debugging
+        // toggle is ON, adbd advertises its TLS port over mDNS. This is the
+        // port the post-pairing retry must use (5555 does not exist without
+        // root, proven in the field).
+        val mdnsPort = discoverWadbPort()
+        if (mdnsPort != null && mdnsPort !in tried) {
+            tried.add(mdnsPort)
+            val output = StringBuilder()
+            when (attemptConnect(key, mdnsPort, FAST_CONNECT_TIMEOUT_MS, FAST_READ_TIMEOUT_MS, output, onLine)) {
+                Attempt.DISPATCHED -> {
+                    if (verifyStarted(output)) {
+                        saveLastGood(mdnsPort)
+                        markAuthorized(true)
+                        logTiming(t0, mdnsPort)
+                        return Result.Started(mdnsPort, SystemClock.elapsedRealtime() - t0)
+                    }
+                    return Result.Failure(Failure.ServerDidNotConfirm, output.toString())
+                }
+                Attempt.AUTH_REJECTED -> {
+                    markAuthorized(false)
+                    return Result.Failure(Failure.Unauthorized, output.toString())
+                }
+                else -> {}
+            }
+        }
+
+        // Stage C — full discovery (deadline-aware, shared with boot path).
         if (connectAndStart(forcedPort = -1, deadline = deadline, onLine = onLine, exclude = tried, key = key)) {
             if (pingBinderSafe() || verifyStarted(StringBuilder())) {
                 markAuthorized(true)
@@ -286,6 +314,7 @@ object StarterEngine {
             }
             Attempt.DISPATCHED
         } catch (e: ConnectException) {
+            if (BuildConfig.DEBUG) Log.i(TAG, "no listener on $port (ECONNREFUSED)")
             Attempt.NO_CONNECT
         } catch (e: SocketTimeoutException) {
             Attempt.NO_CONNECT
@@ -300,6 +329,31 @@ object StarterEngine {
         } finally {
             runCatching { client?.close() }
         }
+    }
+
+    /**
+     * [wifi-flow] Discover the wireless-debugging TLS connect port via mDNS
+     * (_adb-tls-connect._tcp). Null when nothing is advertised: toggle off,
+     * no Wi-Fi network, pre-R, or NsdManager unavailable.
+     */
+    private fun discoverWadbPort(): Int? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val context = AdbKey.appContext ?: return null
+        var port: Int? = null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val mdns = AdbMdns(context, AdbMdns.TLS_CONNECT) { p ->
+            if (p > 0 && port == null) {
+                port = p
+                latch.countDown()
+            }
+        }
+        mdns.start()
+        try {
+            latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+        }
+        mdns.stop()
+        return port
     }
 
     /** Adaptive verify: 50 ms steps at first, 250 ms later. */
