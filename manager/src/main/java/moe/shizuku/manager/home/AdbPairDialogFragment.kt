@@ -113,11 +113,15 @@ class AdbPairDialogFragment : DialogFragment() {
     companion object {
         private const val ARG_AUTO_RETRY = "auto_retry"
 
+        const val TAG = "adb_pair"
+
         fun show(fm: FragmentManager, autoRetry: Boolean) {
+            // [dedupe] one pairing dialog at a time
             if (fm.isStateSaved) return
+            if (fm.findFragmentByTag(TAG) != null) return
             val fragment = AdbPairDialogFragment()
             fragment.arguments = Bundle().apply { putBoolean(ARG_AUTO_RETRY, autoRetry) }
-            fragment.show(fm, AdbPairDialogFragment::class.java.simpleName)
+            fragment.show(fm, TAG)
         }
     }
 
