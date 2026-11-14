@@ -73,18 +73,6 @@ class ProvisioningDialogFragment : DialogFragment() {
         val dialog = builder.create()
         alertDialog = dialog
         dialog.setCanceledOnTouchOutside(false)
-        // [ux] Jump straight to Developer Options once per dialog instance:
-        // the wireless-debugging toggle and the pairing-code dialog live there.
-        if (savedInstanceState == null) {
-            try {
-                val devSettings = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
-                }
-                requireContext().startActivity(devSettings)
-            } catch (_: Exception) {
-            }
-        }
         dialog.setOnShowListener {
             dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
                 runRootProvisioning()
@@ -101,6 +89,17 @@ class ProvisioningDialogFragment : DialogFragment() {
                     return@setOnClickListener
                 }
                 startPairingService()
+                // [ux] the redirect belongs HERE: the user needs Developer
+                // Options to flip the wireless-debugging toggle and open the
+                // pairing-code dialog the notification is waiting for.
+                try {
+                    val devSettings = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
+                    }
+                    startActivity(devSettings)
+                } catch (_: Exception) {
+                }
             }
         }
         return dialog
@@ -127,9 +126,13 @@ class ProvisioningDialogFragment : DialogFragment() {
         val activity = activity ?: return
         lifecycleScope.launch(Dispatchers.IO) {
             updateMessage(getString(R.string.provisioning_working))
+            // [root-grant] libsu blocks here until the user answers the root
+            // manager prompt. A missed prompt = no root: tell the user plainly
+            // and let them re-tap instead of failing silently.
             if (!TrustSeeder.isRootAvailable()) {
                 activity.runOnUiThread {
                     Toast.makeText(activity, R.string.provisioning_root_unavailable, Toast.LENGTH_LONG).show()
+                    updateMessage(getString(R.string.provisioning_root_retry_hint))
                 }
                 return@launch
             }
@@ -137,25 +140,32 @@ class ProvisioningDialogFragment : DialogFragment() {
             val seedOk = TrustSeeder.seed { line ->
                 activity.runOnUiThread { updateMessage(getString(R.string.provisioning_working) + "\n" + line) }
             }
-
-            // Listener: persist + runtime port, then restart adbd. The restart
-            // also makes adbd re-read adb_keys with the freshly seeded key.
+            updateMessage(getString(R.string.provisioning_working) + "\n" + "fixing TCP port 5555 + restarting adbd\n")
             TrustSeeder.fixTcpPortViaRoot()
-            Thread.sleep(1500)
+
+            // [retry] adbd restart latency: the listener is not bound
+            // instantly - poll the start instead of a single shot.
+            var last: StarterEngine.Result? = null
+            repeat(4) { attempt ->
+                activity.runOnUiThread {
+                    updateMessage(getString(R.string.provisioning_working) + "\n" + "start attempt ${attempt + 1}/4\n")
+                }
+                last = StarterEngine.adbStart(5555) { line ->
+                    activity.runOnUiThread { updateMessage("\n" + line) }
+                }
+                if (last is StarterEngine.Result.Started || last is StarterEngine.Result.AlreadyRunning) return@repeat
+                Thread.sleep(2000)
+            }
 
             activity.runOnUiThread {
-                if (seedOk) {
-                    val intent = Intent(activity, StarterActivity::class.java).apply {
-                        putExtra(StarterActivity.EXTRA_IS_ROOT, false)
-                        putExtra(StarterActivity.EXTRA_SILENT, true)
-                        putExtra(StarterActivity.EXTRA_HOST, "127.0.0.1")
-                        putExtra(StarterActivity.EXTRA_PORT, 5555)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                when (val r = last) {
+                    is StarterEngine.Result.Started, is StarterEngine.Result.AlreadyRunning -> {
+                        Toast.makeText(activity, "Shizuku started", Toast.LENGTH_SHORT).show()
+                        dismissAllowingStateLoss()
                     }
-                    startActivity(intent)
-                    dismissAllowingStateLoss()
-                } else {
-                    updateMessage(getString(R.string.provisioning_seed_fail))
+                    else -> updateMessage("\n" + (r as? StarterEngine.Result.Failed)?.let {
+                        StarterEngineFailureText.describe(it)
+                    } ?: getString(R.string.provisioning_seed_fail))
                 }
             }
         }
