@@ -40,6 +40,8 @@ class AdbDialogFragment : DialogFragment() {
 
         val builder = MaterialAlertDialogBuilder(context).apply {
             setTitle(R.string.dialog_adb_discovery)
+            // [wifi-flow] Zero-weight in-app instructions: strings only.
+            setMessage(R.string.wifi_setup_steps)
             setView(binding.root)
             setNegativeButton(android.R.string.cancel, null)
             setPositiveButton(R.string.development_settings, null)
