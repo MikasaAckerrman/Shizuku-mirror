@@ -163,9 +163,8 @@ class ProvisioningDialogFragment : DialogFragment() {
                         Toast.makeText(activity, "Shizuku started", Toast.LENGTH_SHORT).show()
                         dismissAllowingStateLoss()
                     }
-                    else -> updateMessage("\n" + (r as? StarterEngine.Result.Failed)?.let {
-                        StarterEngineFailureText.describe(it)
-                    } ?: getString(R.string.provisioning_seed_fail))
+                    else -> updateMessage("\n" + (r as? StarterEngine.Result.Failed)?.detail
+                        ?: getString(R.string.provisioning_seed_fail))
                 }
             }
         }
