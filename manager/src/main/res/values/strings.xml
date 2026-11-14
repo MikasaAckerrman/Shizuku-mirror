@@ -181,4 +181,5 @@ With %1$s, in any terminal app, you can connect to and interact with the shell r
     <string name="provisioning_seed_fail">Seeding failed</string>
     <string name="wifi_setup_steps">1. Connect the phone to a Wi-Fi network.\n2. Settings → Developer options → \'Wireless debugging\' → ON.\n3. Come back here - the device will be found automatically.\n\nNot found? Tap \'Settings\' below and check the toggle.</string>
     <string name="provisioning_start_now">Start Shizuku</string>
+    <string name="provisioning_root_retry_hint">Root is not available. Grant root to this app in your root manager and tap the button again.</string>
 </resources>
