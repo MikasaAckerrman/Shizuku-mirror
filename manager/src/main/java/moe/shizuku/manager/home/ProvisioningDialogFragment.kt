@@ -20,6 +20,7 @@ import moe.shizuku.manager.R
 import moe.shizuku.manager.adb.AdbPairingService
 import moe.shizuku.manager.adb.TrustSeeder
 import moe.shizuku.manager.starter.StarterActivity
+import moe.shizuku.manager.starter.StarterEngine
 
 /**
  * [provisioning] First-time setup funnel. Shown when a start attempt fails
