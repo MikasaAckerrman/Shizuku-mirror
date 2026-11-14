@@ -154,11 +154,11 @@ object StarterEngine {
                         logTiming(t0, mdnsPort)
                         return Result.Started(mdnsPort, SystemClock.elapsedRealtime() - t0)
                     }
-                    return Result.Failure(Failure.ServerDidNotConfirm, output.toString())
+                    return Result.Failed(Failure.ServerDidNotConfirm, output.toString())
                 }
                 Attempt.AUTH_REJECTED -> {
                     markAuthorized(false)
-                    return Result.Failure(Failure.Unauthorized, output.toString())
+                    return Result.Failed(Failure.Unauthorized, output.toString())
                 }
                 else -> {}
             }
