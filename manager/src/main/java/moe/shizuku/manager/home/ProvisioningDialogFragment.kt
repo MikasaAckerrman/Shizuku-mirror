@@ -21,6 +21,7 @@ import moe.shizuku.manager.adb.AdbPairingService
 import moe.shizuku.manager.adb.TrustSeeder
 import moe.shizuku.manager.starter.StarterActivity
 import moe.shizuku.manager.starter.StarterEngine
+import rikka.shizuku.Shizuku
 
 /**
  * [provisioning] First-time setup funnel. Shown when a start attempt fails
@@ -147,24 +148,47 @@ class ProvisioningDialogFragment : DialogFragment() {
             // [retry] adbd restart latency: the listener is not bound
             // instantly - poll the start instead of a single shot.
             var last: StarterEngine.Result? = null
+            var success = false
             repeat(4) { attempt ->
+                if (success) return@repeat
                 activity.runOnUiThread {
                     updateMessage(getString(R.string.provisioning_working) + "\n" + "start attempt ${attempt + 1}/4\n")
                 }
                 last = StarterEngine.adbStart(5555) { line ->
                     activity.runOnUiThread { updateMessage("\n" + line) }
                 }
-                if (last is StarterEngine.Result.Started || last is StarterEngine.Result.AlreadyRunning) return@repeat
-                Thread.sleep(2000)
+                when (last) {
+                    is StarterEngine.Result.Started -> success = true
+                    is StarterEngine.Result.AlreadyRunning -> {
+                        // [mode-switch] an already-running ROOT server does not
+                        // satisfy the ADB (shell-uid) intent of this button:
+                        // stop it and let the next attempt start the shell one.
+                        val uid = runCatching { Shizuku.getUid() }.getOrDefault(-1)
+                        if (uid == 0) {
+                            activity.runOnUiThread {
+                                updateMessage("\n[server is running as root - switching to ADB mode]\n")
+                            }
+                            runCatching { Shizuku.exit() }
+                            var waited = 0
+                            while (runCatching { Shizuku.pingBinder() }.getOrDefault(false) && waited < 3000) {
+                                Thread.sleep(100)
+                                waited += 100
+                            }
+                        } else {
+                            success = true
+                        }
+                    }
+                    else -> {}
+                }
+                if (!success) Thread.sleep(2000)
             }
 
             activity.runOnUiThread {
-                when (val r = last) {
-                    is StarterEngine.Result.Started, is StarterEngine.Result.AlreadyRunning -> {
-                        Toast.makeText(activity, "Shizuku started", Toast.LENGTH_SHORT).show()
-                        dismissAllowingStateLoss()
-                    }
-                    else -> updateMessage("\n" + (r as? StarterEngine.Result.Failed)?.detail
+                if (success) {
+                    Toast.makeText(activity, "Shizuku started", Toast.LENGTH_SHORT).show()
+                    dismissAllowingStateLoss()
+                } else {
+                    updateMessage("\n" + (last as? StarterEngine.Result.Failed)?.detail
                         ?: getString(R.string.provisioning_seed_fail))
                 }
             }
