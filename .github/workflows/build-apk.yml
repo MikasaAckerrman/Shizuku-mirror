@@ -23,18 +23,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Inject secrets (signing keystore + pre-authorized adb key)
+      - name: Inject secrets (signing keystore)
         env:
           KS_PW: ${{ secrets.MINIS_KEYSTORE_PASSWORD }}
           KEY_PEM: ${{ secrets.MINIS_KEY_PEM }}
           CERT_PEM: ${{ secrets.MINIS_CERT_PEM }}
-          ADBKEY_B64: ${{ secrets.MINIS_ADBKEY_DER_B64 }}
         run: |
           echo "$KEY_PEM" > /tmp/ks.key
           echo "$CERT_PEM" > /tmp/ks.crt
           openssl pkcs12 -export -legacy -inkey /tmp/ks.key -in /tmp/ks.crt \
             -name shizukuplus -passout pass:"$KS_PW" -out shizuku-release.p12
-          echo "$ADBKEY_B64" | base64 -d > manager/src/main/assets/adbkey.der
           {
             echo "KEYSTORE_FILE=$PWD/shizuku-release.p12"
             echo "KEYSTORE_PASSWORD=$KS_PW"
