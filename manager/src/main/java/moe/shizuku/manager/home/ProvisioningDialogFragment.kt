@@ -1,6 +1,8 @@
 package moe.shizuku.manager.home
 
+import android.Manifest
 import android.app.Dialog
+import android.content.pm.PackageManager
 import androidx.fragment.app.DialogFragment
 import android.content.Intent
 import android.os.Build
@@ -14,6 +16,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import moe.shizuku.manager.R
+import moe.shizuku.manager.adb.AdbPairingService
 import moe.shizuku.manager.adb.TrustSeeder
 import moe.shizuku.manager.starter.StarterActivity
 
