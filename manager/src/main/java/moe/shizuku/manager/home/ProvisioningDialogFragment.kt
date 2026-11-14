@@ -7,6 +7,7 @@ import androidx.fragment.app.DialogFragment
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -72,6 +73,18 @@ class ProvisioningDialogFragment : DialogFragment() {
         val dialog = builder.create()
         alertDialog = dialog
         dialog.setCanceledOnTouchOutside(false)
+        // [ux] Jump straight to Developer Options once per dialog instance:
+        // the wireless-debugging toggle and the pairing-code dialog live there.
+        if (savedInstanceState == null) {
+            try {
+                val devSettings = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
+                }
+                requireContext().startActivity(devSettings)
+            } catch (_: Exception) {
+            }
+        }
         dialog.setOnShowListener {
             dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
                 runRootProvisioning()
