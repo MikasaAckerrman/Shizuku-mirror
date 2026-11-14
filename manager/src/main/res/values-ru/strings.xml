@@ -145,4 +145,5 @@
     <string name="provisioning_root_unavailable">Root на этом устройстве недоступен</string>
     <string name="provisioning_seed_fail">Не удалось добавить доверие</string>
     <string name="wifi_setup_steps">1. Подключи телефон к Wi-Fi-сети.\n2. Настройки → Для разработчиков → «Отладка по Wi-Fi» → ВКЛ.\n3. Вернись сюда — устройство найдётся само.\n\nНе находится? Нажми «Настройки» ниже и проверь тумблер.</string>
+    <string name="provisioning_start_now">Запустить Shizuku</string>
 </resources>
