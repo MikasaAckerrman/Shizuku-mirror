@@ -6,6 +6,8 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -33,15 +35,27 @@ class ProvisioningDialogFragment : DialogFragment() {
         const val REASON_NO_LISTENER = "no_listener"
         const val REASON_UNAUTHORIZED = "unauthorized"
 
+        const val TAG = "provisioning"
+
         fun show(fragmentManager: FragmentManager, reason: String) {
+            // [dedupe] never stack the funnel: one instance at a time
             if (fragmentManager.isStateSaved) return
+            if (fragmentManager.findFragmentByTag(TAG) != null) return
             val fragment = ProvisioningDialogFragment()
             fragment.arguments = Bundle().apply { putString("reason", reason) }
-            fragment.show(fragmentManager, ProvisioningDialogFragment::class.java.simpleName)
+            fragment.show(fragmentManager, TAG)
         }
     }
 
     private var alertDialog: androidx.appcompat.app.AlertDialog? = null
+
+    // [api33] pm clear wipes POST_NOTIFICATIONS; the pairing flow is driven by
+    // a notification, so the grant must be re-requested. Denied -> silent
+    // fallback to the in-app dialog (its auto-restart is free anyway).
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) startPairingService() else fallbackToInAppPairing()
+        }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val builder = MaterialAlertDialogBuilder(requireContext())
@@ -60,13 +74,33 @@ class ProvisioningDialogFragment : DialogFragment() {
                 runRootProvisioning()
             }
             dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
-                // [wifi-flow] Hand over to the pairing dialog; after a successful
-                // pairing it auto-restarts Shizuku (see AdbPairDialogFragment).
-                AdbPairDialogFragment.show(parentFragmentManager, autoRetry = true)
-                dismissAllowingStateLoss()
+                // [wifi-flow] Pairing is driven by a NOTIFICATION (upstream UX):
+                // the service discovers the pairing service via mDNS and the
+                // 6-digit code is entered in the notification itself.
+                if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                        requireContext(), Manifest.permission.POST_NOTIFICATIONS
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    return@setOnClickListener
+                }
+                startPairingService()
             }
         }
         return dialog
+    }
+
+    private fun startPairingService() {
+        // [dedupe] the service itself is idempotent (startSearch guard)
+        AdbPairingService.autoRestartOnSuccess = true
+        ContextCompat.startForegroundService(requireContext(), AdbPairingService.startIntent(requireContext()))
+        dismissAllowingStateLoss()
+    }
+
+    private fun fallbackToInAppPairing() {
+        // Free auto-restart from the activity context (no background-start ban)
+        AdbPairDialogFragment.show(parentFragmentManager, autoRetry = true)
+        dismissAllowingStateLoss()
     }
 
     private fun updateMessage(text: String) {
