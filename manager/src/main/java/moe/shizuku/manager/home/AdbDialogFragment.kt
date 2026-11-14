@@ -110,7 +110,13 @@ class AdbDialogFragment : DialogFragment() {
     }
 
     fun show(fragmentManager: FragmentManager) {
+        // [dedupe] one discovery dialog at a time
         if (fragmentManager.isStateSaved) return
-        show(fragmentManager, javaClass.simpleName)
+        if (fragmentManager.findFragmentByTag(TAG) != null) return
+        show(fragmentManager, TAG)
+    }
+
+    companion object {
+        const val TAG = "adb_discovery"
     }
 }
