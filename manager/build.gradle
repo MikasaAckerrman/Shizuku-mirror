@@ -15,11 +15,6 @@ android {
         applicationId "moe.shizuku.privileged.api"
         versionCode rootProject.ext.versionCode
         versionName rootProject.ext.versionName
-        // [security] Personal builds may bundle the pre-authorized ADB key
-        // (assets/adbkey.der). Public/distributed builds MUST set this to
-        // false so a per-device key is generated and kept only encrypted
-        // in app-private storage (see AdbKeyHolder).
-        buildConfigField "boolean", "PREAUTHORIZED_KEY", "true"
         externalNativeBuild {
             cmake {
                 arguments '-DANDROID_STL=none'
