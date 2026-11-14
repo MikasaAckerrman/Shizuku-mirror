@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import moe.shizuku.manager.R
+import moe.shizuku.manager.starter.StarterActivity
 import rikka.core.ktx.unsafeLazy
 import java.net.ConnectException
 
@@ -30,6 +31,15 @@ class AdbPairingService : Service() {
         private const val stopRequestId = 2
         private const val retryRequestId = 3
         private const val startAction = "start"
+
+        /**
+         * [provisioning] Set by ProvisioningDialogFragment before starting the
+         * service: on successful pairing, the success notification gains a
+         * "Start Shizuku" action (background services cannot start activities
+         * themselves on Android 10+, so one tap on the notification does it).
+         */
+        @JvmStatic
+        var autoRestartOnSuccess: Boolean = false
         private const val stopAction = "stop"
         private const val replyAction = "reply"
         private const val remoteInputResultKey = "paring_code"
@@ -202,6 +212,21 @@ class AdbPairingService : Service() {
             }
         }
 
+        val startActionPending = if (success && autoRestartOnSuccess) {
+            autoRestartOnSuccess = false
+            PendingIntent.getActivity(
+                this, 1001,
+                Intent(this, StarterActivity::class.java).apply {
+                    putExtra(StarterActivity.EXTRA_IS_ROOT, false)
+                    putExtra(StarterActivity.EXTRA_SILENT, true)
+                    putExtra(StarterActivity.EXTRA_HOST, "127.0.0.1")
+                    putExtra(StarterActivity.EXTRA_PORT, 5555)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                },
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        } else null
+
         getSystemService(NotificationManager::class.java).notify(
             notificationId,
             Notification.Builder(this, notificationChannel)
@@ -209,6 +234,9 @@ class AdbPairingService : Service() {
                 .setSmallIcon(R.drawable.ic_system_icon)
                 .setContentTitle(title)
                 .setContentText(text)
+                .let { b ->
+                    startActionPending?.let { b.setContentIntent(it) } ?: b
+                }
                 /*.apply {
                     if (!success) {
                         addAction(retryNotificationAction)
