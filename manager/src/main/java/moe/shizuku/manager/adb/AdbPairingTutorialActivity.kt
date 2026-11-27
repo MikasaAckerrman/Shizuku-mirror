@@ -1,16 +1,19 @@
 package moe.shizuku.manager.adb
 
+import android.Manifest
 import android.app.AppOpsManager
 import android.app.ForegroundServiceStartNotAllowedException
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
@@ -28,6 +31,16 @@ class AdbPairingTutorialActivity : AppBarActivity() {
     private var notificationEnabled: Boolean = false
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
+    private val requestNotificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val enabled = isNotificationEnabled()
+            notificationEnabled = enabled
+            syncNotificationEnabled()
+            if (granted || enabled) {
+                startPairingService()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val context = this
@@ -40,6 +53,10 @@ class AdbPairingTutorialActivity : AppBarActivity() {
 
         if (notificationEnabled) {
             startPairingService()
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
         binding.apply {

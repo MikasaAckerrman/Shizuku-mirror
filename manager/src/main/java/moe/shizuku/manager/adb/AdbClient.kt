@@ -28,7 +28,8 @@ import javax.net.ssl.SSLSocket
 private const val TAG = "AdbClient"
 private const val LOCAL_CONNECT_TIMEOUT_MS = 1000
 private const val REMOTE_CONNECT_TIMEOUT_MS = 3000
-private const val DEFAULT_READ_TIMEOUT_MS = 5000
+private const val DEFAULT_READ_TIMEOUT_MS = 20000
+private const val TLS_HANDSHAKE_PROBE_MS = 250
 private const val MAX_DATA_LENGTH = 1024 * 1024
 private const val MAX_PRE_OPEN_SKIP = 16
 
@@ -42,6 +43,7 @@ class AdbClient(
     companion object {
         const val READ_TIMEOUT_MS = DEFAULT_READ_TIMEOUT_MS
         const val PROBE_TIMEOUT_MS = 400
+        private const val CNXN_IDENTITY = "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app,sendrecv_v2_sync,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dedupe,openscreen_mdns,audiotrack"
 
         /**
          * Lightweight protocol-level probe to verify that a local port is an
@@ -110,7 +112,7 @@ class AdbClient(
         plainInputStream = DataInputStream(s.getInputStream())
         plainOutputStream = DataOutputStream(s.getOutputStream())
 
-        write(A_CNXN, A_VERSION, A_MAXDATA, "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app,sendrecv_v2_sync,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dedupe,openscreen_mdns,audiotrack")
+        write(A_CNXN, A_VERSION, A_MAXDATA, CNXN_IDENTITY)
 
         var message = read()
         if (message.command == A_STLS) {
@@ -130,9 +132,27 @@ class AdbClient(
             tlsOutputStream = DataOutputStream(tls.outputStream)
             useTls = true
 
-            // TLS-era adbd waits for client A_CNXN after handshake
-            write(A_CNXN, A_VERSION, A_MAXDATA, "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app,sendrecv_v2_sync,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dedupe,openscreen_mdns,audiotrack")
-            message = read()
+            // После mTLS-handshake в AOSP adbd сам сразу отправляет A_CNXN
+            // (если клиентский сертификат уже доверенный; именно поэтому нельзя
+            // слать второй A_CNXN безусловно — иначе в буфере остаётся лишний
+            // ответ adbd, который затем вычитывается вместо A_OKAY в shellCommand()).
+            // Если же проприетарный adbd ждёт A_CNXN от клиента, короткий probe
+            // вернёт SocketTimeoutException и мы отправим A_CNXN ровно один раз.
+            val serverInitiated = try {
+                tls.soTimeout = TLS_HANDSHAKE_PROBE_MS
+                read()
+            } catch (_: java.net.SocketTimeoutException) {
+                null
+            } finally {
+                tls.soTimeout = readTimeoutMs
+            }
+
+            if (serverInitiated != null) {
+                message = serverInitiated
+            } else {
+                write(A_CNXN, A_VERSION, A_MAXDATA, CNXN_IDENTITY)
+                message = read()
+            }
             if (message.command == A_AUTH) {
                 if (message.arg0 != ADB_AUTH_TOKEN) error("not A_AUTH ADB_AUTH_TOKEN")
                 write(A_AUTH, ADB_AUTH_SIGNATURE, 0, key.sign(message.data))
@@ -166,7 +186,11 @@ class AdbClient(
             if (++skipped > MAX_PRE_OPEN_SKIP) {
                 error("not A_OKAY or A_CLSE after $skipped messages: ${message.toStringShort()}")
             }
-            Log.w(TAG, "Unexpected message before open response: ${message.toStringShort()}, reading next")
+            val msgSummary = "Unexpected message before open response: ${message.toStringShort()}"
+            Log.w(TAG, "$msgSummary, reading next")
+            if (message.command == A_CNXN) {
+                listener?.invoke("[$msgSummary]\n".toByteArray())
+            }
             message = read()
         }
 

@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import moe.shizuku.manager.R
+import moe.shizuku.manager.adb.AdbPairingTutorialActivity
 import moe.shizuku.manager.adb.PortDiscovery
 import moe.shizuku.manager.databinding.AdbDialogBinding
 import moe.shizuku.manager.starter.StarterActivity
@@ -48,6 +49,8 @@ class AdbDialogFragment : DialogFragment() {
 
             if (tcpPort != -1) {
                 setNeutralButton("$tcpPort", null)
+            } else {
+                setNeutralButton(R.string.adb_pairing, null)
             }
         }
         val dialog = builder.create()
@@ -97,13 +100,26 @@ class AdbDialogFragment : DialogFragment() {
             }
         }
 
+        val tcpPort = EnvironmentUtils.getAdbTcpPort()
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val target = PortDiscovery.findDirectAdbPort()
-                if (target in 1..65535) {
-                    withContext(Dispatchers.Main) {
-                        if (isAdded) startAndDismiss(target)
+            if (tcpPort != -1) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val target = PortDiscovery.findDirectAdbPort()
+                    if (target in 1..65535) {
+                        withContext(Dispatchers.Main) {
+                            if (isAdded) startAndDismiss(target)
+                        }
                     }
+                }
+            } else {
+                val activity = activity ?: return@setOnClickListener
+                if ((activity.window?.decorView?.display?.displayId ?: -1) > 0) {
+                    val fm = parentFragmentManager
+                    dismissAllowingStateLoss()
+                    AdbPairDialogFragment().show(fm)
+                } else {
+                    startActivity(Intent(activity, AdbPairingTutorialActivity::class.java))
+                    dismissAllowingStateLoss()
                 }
             }
         }

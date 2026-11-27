@@ -220,10 +220,12 @@ class StarterService : Service() {
                     if (attempt > 0) {
                         sb.append("\n[retry ADB connection attempt ${attempt + 1}/3]\n")
                         if (host == "127.0.0.1" && allowWadbFallback) {
-                            val discovered = moe.shizuku.manager.adb.PortDiscovery.rediscoverWadbPort(this@StarterService, currentPort)
-                            if (discovered in 1..65535 && discovered != currentPort) {
-                                currentPort = discovered
-                                sb.append("Re-discovered active WADB port: $currentPort\n")
+                            if (!AdbClient.isAdbListener(host, currentPort, 250)) {
+                                val discovered = moe.shizuku.manager.adb.PortDiscovery.rediscoverWadbPort(this@StarterService, currentPort)
+                                if (discovered in 1..65535 && discovered != currentPort) {
+                                    currentPort = discovered
+                                    sb.append("Re-discovered active WADB port: $currentPort\n")
+                                }
                             }
                         }
                         Thread.sleep(200)

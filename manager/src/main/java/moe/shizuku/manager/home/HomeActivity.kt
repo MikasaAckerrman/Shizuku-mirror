@@ -2,6 +2,7 @@ package moe.shizuku.manager.home
 
 import android.content.DialogInterface
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Process
 import android.os.Trace
@@ -54,6 +55,15 @@ abstract class HomeActivity : AppBarActivity() {
 
     private var lastServiceStatus: ServiceStatus? = null
     private var lastGrantedCount: Int = -1
+    private var lastPreferredStartMethod: String? = ShizukuSettings.getPreferredStartMethod()
+
+    private val preferenceChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == ShizukuSettings.PREFERRED_START_METHOD) {
+                lastPreferredStartMethod = ShizukuSettings.getPreferredStartMethod()
+                runOnUiThread { adapter.updateData() }
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         Trace.beginSection("HomeActivity.onCreate")
@@ -88,6 +98,7 @@ abstract class HomeActivity : AppBarActivity() {
 
         Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         Shizuku.addBinderDeadListener(binderDeadListener)
+        ShizukuSettings.getPreferences().registerOnSharedPreferenceChangeListener(preferenceChangeListener)
         handleAutoStartIntent(intent)
         Trace.endSection()
     }
@@ -132,6 +143,11 @@ abstract class HomeActivity : AppBarActivity() {
 
     override fun onResume() {
         super.onResume()
+        val currentMethod = ShizukuSettings.getPreferredStartMethod()
+        if (currentMethod != lastPreferredStartMethod) {
+            lastPreferredStartMethod = currentMethod
+            adapter.updateData()
+        }
         val now = System.currentTimeMillis()
         if (now - lastResume > 500) {
             lastResume = now
@@ -147,6 +163,7 @@ abstract class HomeActivity : AppBarActivity() {
         super.onDestroy()
         Shizuku.removeBinderReceivedListener(binderReceivedListener)
         Shizuku.removeBinderDeadListener(binderDeadListener)
+        ShizukuSettings.getPreferences().unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

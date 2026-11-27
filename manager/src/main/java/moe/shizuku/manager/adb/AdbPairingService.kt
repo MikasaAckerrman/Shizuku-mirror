@@ -34,10 +34,13 @@ class AdbPairingService : Service() {
         private const val stopAction = "stop"
         private const val replyAction = "reply"
         private const val remoteInputResultKey = "paring_code"
-        private const val portKey = "paring_code"
+        private const val portKey = "port"
+        private const val forceRestartKey = "force_restart"
 
-        fun startIntent(context: Context): Intent {
-            return Intent(context, AdbPairingService::class.java).setAction(startAction)
+        fun startIntent(context: Context, forceRestart: Boolean = false): Intent {
+            return Intent(context, AdbPairingService::class.java)
+                .setAction(startAction)
+                .putExtra(forceRestartKey, forceRestart)
         }
 
         private fun stopIntent(context: Context): Intent {
@@ -54,12 +57,14 @@ class AdbPairingService : Service() {
     private val observer = Observer<Int> { port ->
         Log.i(tag, "Pairing service port: $port")
         if (port <= 0) {
+            lastFoundPort = -1
             if (started) {
                 getSystemService(NotificationManager::class.java).notify(notificationId, searchingNotification)
             }
             return@Observer
         }
 
+        lastFoundPort = port
         // Since the service could be killed before user finishing input,
         // we need to put the port into Intent
         val notification = createInputNotification(port)
@@ -67,7 +72,11 @@ class AdbPairingService : Service() {
         getSystemService(NotificationManager::class.java).notify(notificationId, notification)
     }
 
+    @Volatile
     private var started = false
+
+    @Volatile
+    private var lastFoundPort = -1
 
     override fun onCreate() {
         super.onCreate()
@@ -87,7 +96,7 @@ class AdbPairingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = when (intent?.action) {
             startAction -> {
-                onStart()
+                onStart(forceRestart = intent.getBooleanExtra(forceRestartKey, false))
             }
             replyAction -> {
                 val code = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(remoteInputResultKey) ?: ""
@@ -95,13 +104,15 @@ class AdbPairingService : Service() {
                 if (port != -1) {
                     onInput(code.toString(), port)
                 } else {
-                    onStart()
+                    onStart(forceRestart = true)
                 }
             }
             stopAction -> {
+                stopSearch()
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                getSystemService(NotificationManager::class.java).cancel(notificationId)
                 stopSelf()
-                null
+                return START_NOT_STICKY
             }
             else -> {
                 return START_NOT_STICKY
@@ -109,8 +120,15 @@ class AdbPairingService : Service() {
         }
         if (notification != null) {
             try {
-                startForeground(notificationId, notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        notificationId,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
+                    )
+                } else {
+                    startForeground(notificationId, notification)
+                }
             } catch (e: Throwable) {
                 Log.e(tag, "startForeground failed", e)
 
@@ -120,19 +138,46 @@ class AdbPairingService : Service() {
                 }
             }
         }
-        return START_REDELIVER_INTENT
+        return if (intent.action == startAction) START_REDELIVER_INTENT else START_NOT_STICKY
     }
 
-    private fun startSearch() {
-        if (started) return
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(tag, "shortService timeout reached (startId=$startId)")
+        stopSearch()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        val timeoutNotification = Notification.Builder(this, notificationChannel)
+            .setColor(getColor(R.color.notification))
+            .setSmallIcon(R.drawable.ic_system_icon)
+            .setContentTitle(getString(R.string.notification_adb_pairing_failed_title))
+            .setContentText(getString(R.string.notification_adb_pairing_retry))
+            .addAction(retryNotificationAction)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(notificationId, timeoutNotification)
+        stopSelf(startId)
+    }
+
+    private fun startSearch(forceRestart: Boolean = false) {
+        if (started) {
+            if (forceRestart || adbMdns == null) {
+                lastFoundPort = -1
+                if (adbMdns != null) {
+                    adbMdns?.restart()
+                } else {
+                    adbMdns = AdbMdns(this, AdbMdns.TLS_PAIRING, observer).apply { start() }
+                }
+            }
+            return
+        }
         started = true
         adbMdns = AdbMdns(this, AdbMdns.TLS_PAIRING, observer).apply { start() }
     }
 
     private fun stopSearch() {
-        if (!started) return
         started = false
+        lastFoundPort = -1
         adbMdns?.stop()
+        adbMdns = null
     }
 
     override fun onDestroy() {
@@ -140,8 +185,14 @@ class AdbPairingService : Service() {
         stopSearch()
     }
 
-    private fun onStart(): Notification {
-        startSearch()
+    private fun onStart(forceRestart: Boolean = false): Notification {
+        if (!forceRestart) {
+            val existingPort = lastFoundPort
+            if (started && existingPort in 1..65535) {
+                return createInputNotification(existingPort)
+            }
+        }
+        startSearch(forceRestart)
         return searchingNotification
     }
 
@@ -153,11 +204,19 @@ class AdbPairingService : Service() {
                 AdbKey(PreferenceAdbKeyStore(ShizukuSettings.getPreferences()), "shizuku")
             } catch (e: Throwable) {
                 e.printStackTrace()
+                handleResult(false, AdbKeyException(e))
                 return@launch
             }
 
             AdbPairingClient(host, port, code, key).runCatching {
-                start()
+                try {
+                    start()
+                } finally {
+                    try {
+                        close()
+                    } catch (_: Throwable) {
+                    }
+                }
             }.onFailure {
                 handleResult(false, it)
             }.onSuccess {
@@ -182,6 +241,7 @@ class AdbPairingService : Service() {
 
             stopSearch()
         } else {
+            stopSearch()
             title = getString(R.string.notification_adb_pairing_failed_title)
 
             text = when (exception) {
@@ -259,14 +319,14 @@ class AdbPairingService : Service() {
     }
 
     private val retryNotificationAction by unsafeLazy {
-        val pendingIntent = PendingIntent.getService(
+        val pendingIntent = PendingIntent.getForegroundService(
             this,
             retryRequestId,
-            startIntent(this),
+            startIntent(this, forceRestart = true),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-                PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             else
-                0
+                PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         Notification.Action.Builder(
@@ -277,36 +337,13 @@ class AdbPairingService : Service() {
             .build()
     }
 
-    private val replyNotificationAction by unsafeLazy {
+    private fun replyNotificationAction(port: Int): Notification.Action {
         val remoteInput = RemoteInput.Builder(remoteInputResultKey).run {
             setLabel(getString(R.string.dialog_adb_pairing_paring_code))
             build()
         }
 
         val pendingIntent = PendingIntent.getForegroundService(
-            this,
-            replyRequestId,
-            replyIntent(this, -1),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            else
-                PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        Notification.Action.Builder(
-            null,
-            getString(R.string.notification_adb_pairing_input_paring_code),
-            pendingIntent
-        )
-            .addRemoteInput(remoteInput)
-            .build()
-    }
-
-    private fun replyNotificationAction(port: Int): Notification.Action {
-        // Ensure pending intent is created
-        val action = replyNotificationAction
-
-        PendingIntent.getForegroundService(
             this,
             replyRequestId,
             replyIntent(this, port),
@@ -316,7 +353,13 @@ class AdbPairingService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        return action
+        return Notification.Action.Builder(
+            null,
+            getString(R.string.notification_adb_pairing_input_paring_code),
+            pendingIntent
+        )
+            .addRemoteInput(remoteInput)
+            .build()
     }
 
     private val searchingNotification by unsafeLazy {
