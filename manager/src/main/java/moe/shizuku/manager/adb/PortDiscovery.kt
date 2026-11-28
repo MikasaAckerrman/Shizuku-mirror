@@ -1,14 +1,20 @@
 package moe.shizuku.manager.adb
 
+import android.Manifest.permission.WRITE_SECURE_SETTINGS
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
+import android.util.Log
 import androidx.lifecycle.Observer
 import kotlinx.coroutines.*
+import moe.shizuku.manager.ShizukuSettings
 import moe.shizuku.manager.utils.EnvironmentUtils
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLProtocolException
 
 /**
  * Единый модуль обнаружения порта для ручного запуска (без автозапуска на boot).
@@ -104,7 +110,7 @@ object PortDiscovery {
             return tlsPort
         }
 
-        val scoutPort = FastPortScout.findActiveWadbPort(400)
+        val scoutPort = FastPortScout.findActiveWadbPort(400, include5555 = excludePort != 5555)
         if (scoutPort in 1..65535 && scoutPort != excludePort) {
             return scoutPort
         }
@@ -130,6 +136,78 @@ object PortDiscovery {
             -1
         } finally {
             mdns.stop()
+        }
+    }
+
+    /**
+     * Находит активный WADB-порт (при необходимости поднимает adb_wifi_enabled=1,
+     * если есть WRITE_SECURE_SETTINGS и Wi-Fi), отправляет `tcpip:5555` и ждёт
+     * появления TCP-слушателя на targetPort.
+     */
+    fun activateTcpPortViaWadb(
+        context: Context,
+        key: AdbKey,
+        targetPort: Int = 5555,
+        log: ((String) -> Unit)? = null
+    ): Boolean {
+        if (AdbClient.isAdbListener("127.0.0.1", targetPort, 200)) {
+            return true
+        }
+
+        var wadbPort = rediscoverWadbPort(context, excludePort = targetPort, mdnsTimeoutMs = 1200)
+        if (wadbPort !in 1..65535
+            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            && context.checkSelfPermission(WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+            && EnvironmentUtils.isWifiConnected(context)
+        ) {
+            try {
+                val cr = context.contentResolver
+                Settings.Global.putLong(cr, "adb_allowed_connection_time", 0L)
+                Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1)
+                Settings.Global.putInt(cr, "adb_wifi_enabled", 1)
+                log?.invoke("Enabling Wireless debugging temporarily to open port $targetPort...\n")
+                val deadline = System.currentTimeMillis() + 2500L
+                while (System.currentTimeMillis() < deadline && wadbPort !in 1..65535) {
+                    wadbPort = rediscoverWadbPort(context, excludePort = targetPort, mdnsTimeoutMs = 700)
+                    if (wadbPort in 1..65535) break
+                    Thread.sleep(150)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        if (wadbPort !in 1..65535) {
+            return false
+        }
+
+        return try {
+            log?.invoke("Found wireless ADB on port $wadbPort, requesting tcpip:$targetPort...\n")
+            val accepted = AdbClient("127.0.0.1", wadbPort, key, 8000).use { client ->
+                client.connect()
+                ShizukuSettings.setAdbTrusted(true)
+                client.tcpip(targetPort)
+            }
+            if (!accepted) {
+                log?.invoke("adbd rejected tcpip:$targetPort on port $wadbPort\n")
+                return false
+            }
+            val deadline = System.currentTimeMillis() + 3000L
+            while (System.currentTimeMillis() < deadline) {
+                if (AdbClient.isAdbListener("127.0.0.1", targetPort, 200)) {
+                    log?.invoke("Port $targetPort is now open.\n")
+                    return true
+                }
+                Thread.sleep(150)
+            }
+            AdbClient.isAdbListener("127.0.0.1", targetPort, 250)
+        } catch (e: SSLProtocolException) {
+            ShizukuSettings.setAdbTrusted(false)
+            Log.w("PortDiscovery", "activateTcpPortViaWadb pairing revoked on port $wadbPort", e)
+            throw e
+        } catch (e: Throwable) {
+            Log.w("PortDiscovery", "activateTcpPortViaWadb failed on port $wadbPort", e)
+            log?.invoke("Failed to activate port $targetPort via WADB port $wadbPort: ${e.message}\n")
+            false
         }
     }
 }

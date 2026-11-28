@@ -1,6 +1,8 @@
 package moe.shizuku.manager.starter
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.lifecycle.LiveData
@@ -11,6 +13,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.topjohnwu.superuser.CallbackList
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -69,6 +72,17 @@ class StarterActivity : AppBarActivity() {
             binding = StarterActivityBinding.inflate(layoutInflater)
             setContentView(binding!!.root)
             binding?.text1?.text = providedOutput
+            if (intent.getBooleanExtra(EXTRA_NEEDS_PAIRING, false)
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            ) {
+                MaterialAlertDialogBuilder(this)
+                    .setMessage(R.string.adb_pair_required)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .setNeutralButton(R.string.adb_pairing) { _, _ ->
+                        startActivity(Intent(this, moe.shizuku.manager.adb.AdbPairingTutorialActivity::class.java))
+                    }
+                    .show()
+            }
             return
         }
 
@@ -123,15 +137,21 @@ class StarterActivity : AppBarActivity() {
                         message = R.string.cannot_connect_port
                     }
                     is SSLProtocolException -> {
+                        ShizukuSettings.setAdbTrusted(false)
                         message = R.string.adb_pair_required
                     }
                 }
 
                 if (message != 0) {
-                    MaterialAlertDialogBuilder(this)
+                    val dialogBuilder = MaterialAlertDialogBuilder(this)
                         .setMessage(message)
                         .setPositiveButton(android.R.string.ok, null)
-                        .show()
+                    if (it.error is SSLProtocolException && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        dialogBuilder.setNeutralButton(R.string.adb_pairing) { _, _ ->
+                            startActivity(Intent(this, moe.shizuku.manager.adb.AdbPairingTutorialActivity::class.java))
+                        }
+                    }
+                    dialogBuilder.show()
                 }
             }
             binding?.text1?.text = output
@@ -155,6 +175,7 @@ class StarterActivity : AppBarActivity() {
         const val EXTRA_PORT = "$EXTRA.PORT"
         const val EXTRA_SILENT = "$EXTRA.SILENT"
         const val EXTRA_OUTPUT = "$EXTRA.OUTPUT"
+        const val EXTRA_NEEDS_PAIRING = "$EXTRA.NEEDS_PAIRING"
     }
 }
 
@@ -254,14 +275,51 @@ private class ViewModel(context: Context, root: Boolean, host: String?, port: In
                 return@launch
             }
 
+            val is5555Mode = host == "127.0.0.1" && port == 5555 &&
+                    ShizukuSettings.getPreferredStartMethod() != ShizukuSettings.START_METHOD_WIRELESS
             val allowWadbFallback = (port != 5555) || (ShizukuSettings.getPreferredStartMethod() == ShizukuSettings.START_METHOD_WIRELESS)
             var lastError: Throwable? = null
             var success = false
             var currentPort = port
+            var triedTcp5555Activation = false
             for (attempt in 0 until 3) {
                 if (attempt > 0) {
                     sb.append("\n[retry ADB connection attempt ${attempt + 1}/3]\n")
-                    if (host == "127.0.0.1" && allowWadbFallback) {
+                    if (is5555Mode && currentPort == 5555 && !triedTcp5555Activation &&
+                        !AdbClient.isAdbListener(host, 5555, 200)
+                    ) {
+                        triedTcp5555Activation = true
+                        val opened = try {
+                            moe.shizuku.manager.adb.PortDiscovery.activateTcpPortViaWadb(
+                                context,
+                                key,
+                                5555
+                            ) { line ->
+                                sb.append(line)
+                                postResult()
+                            }
+                        } catch (ssl: SSLProtocolException) {
+                            lastError = ssl
+                            sb.append("Wireless ADB pairing rejected (SSLProtocolException); pairing is required.\n")
+                            postResult()
+                            break
+                        }
+                        if (!opened) {
+                            val fallbackWadb = moe.shizuku.manager.adb.PortDiscovery.rediscoverWadbPort(
+                                context,
+                                excludePort = 5555,
+                                mdnsTimeoutMs = 900
+                            )
+                            if (fallbackWadb in 1..65535) {
+                                currentPort = fallbackWadb
+                                sb.append("Port 5555 unavailable; falling back to active WADB port: $currentPort\n")
+                            } else {
+                                sb.append("\nPort 5555 is closed and no active Wireless debugging session was found.\n")
+                                postResult()
+                                break
+                            }
+                        }
+                    } else if (host == "127.0.0.1" && allowWadbFallback) {
                         // Не меняем рабочий порт при таймауте/отвале, если текущий всё ещё отвечает по ADB;
                         // переобнаруживаем только если текущий порт перестал слушать.
                         if (!AdbClient.isAdbListener(host, currentPort, 250)) {
@@ -278,18 +336,45 @@ private class ViewModel(context: Context, root: Boolean, host: String?, port: In
                 try {
                     AdbClient(host, currentPort, key).use { client ->
                         client.connect()
+                        if (currentPort != 5555) {
+                            ShizukuSettings.setAdbTrusted(true)
+                        }
                         client.shellCommand(Starter.internalCommand) {
                             sb.append(String(it))
                             postResult()
                         }
                     }
                     success = true
+                    if (host == "127.0.0.1" && currentPort != 5555 &&
+                        EnvironmentUtils.getAdbTcpPort() != 5555 &&
+                        !AdbClient.isAdbListener(host, 5555, 150)
+                    ) {
+                        @Suppress("OPT_IN_USAGE")
+                        GlobalScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                AdbClient(host, currentPort, key, 6000).use { tcpClient ->
+                                    tcpClient.connect()
+                                    if (tcpClient.tcpip(5555)) {
+                                        sb.append("\nActivated ADB TCP port 5555 via wireless ADB (works without Wi-Fi until reboot).\n")
+                                        postResult()
+                                    }
+                                }
+                            }
+                        }
+                    }
                     break
                 } catch (e: Throwable) {
                     lastError = e
                     sb.append("Attempt ${attempt + 1} (port $currentPort) error: ${e.javaClass.simpleName}: ${e.message}\n")
                     postResult()
                     e.printStackTrace()
+                    if (is5555Mode && attempt >= 1 && e is ConnectException &&
+                        !AdbClient.isAdbListener(host, currentPort, 150)
+                    ) {
+                        sb.append("\nPort 5555 is closed (requires one-time activation via Wireless debugging after reboot when device is not rooted).\n")
+                        postResult()
+                        break
+                    }
                 }
             }
 

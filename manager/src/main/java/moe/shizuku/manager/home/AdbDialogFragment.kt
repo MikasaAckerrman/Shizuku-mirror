@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import moe.shizuku.manager.R
+import moe.shizuku.manager.ShizukuSettings
 import moe.shizuku.manager.adb.AdbPairingTutorialActivity
 import moe.shizuku.manager.adb.PortDiscovery
 import moe.shizuku.manager.databinding.AdbDialogBinding
@@ -34,23 +35,27 @@ class AdbDialogFragment : DialogFragment() {
     private var discoverySession: PortDiscovery.Session? = null
     private val starting = AtomicBoolean(false)
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+    private var dialogTcpPort: Int = -1
+    private var showPairingInsteadOfDev: Boolean = false
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val context = requireContext()
         binding = AdbDialogBinding.inflate(layoutInflater)
 
-        val tcpPort = EnvironmentUtils.getAdbTcpPort()
+        dialogTcpPort = EnvironmentUtils.getAdbTcpPort()
+        showPairingInsteadOfDev = dialogTcpPort == -1 && !ShizukuSettings.isAdbTrusted()
 
         val builder = MaterialAlertDialogBuilder(context).apply {
             setTitle(R.string.dialog_adb_discovery)
             setView(binding.root)
             setNegativeButton(android.R.string.cancel, null)
-            setPositiveButton(R.string.development_settings, null)
-
-            if (tcpPort != -1) {
-                setNeutralButton("$tcpPort", null)
+            if (dialogTcpPort != -1) {
+                setPositiveButton(R.string.development_settings, null)
+                setNeutralButton("$dialogTcpPort", null)
+            } else if (showPairingInsteadOfDev) {
+                setPositiveButton(R.string.adb_pairing, null)
             } else {
-                setNeutralButton(R.string.adb_pairing, null)
+                setPositiveButton(R.string.development_settings, null)
             }
         }
         val dialog = builder.create()
@@ -79,39 +84,18 @@ class AdbDialogFragment : DialogFragment() {
             }
         }
 
-        val devButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-        val updateDevButton: (Boolean) -> Unit = { wifiOk ->
-            devButton.post {
-                devButton.isEnabled = wifiOk
-                devButton.alpha = if (wifiOk) 1.0f else 0.4f
-            }
-        }
-        wifiCallback = EnvironmentUtils.registerWifiListener(context, updateDevButton)
-
-        devButton.setOnClickListener {
-            if (!EnvironmentUtils.isWifiConnected(it.context)) return@setOnClickListener
-
-            val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            intent.putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
-            try {
-                it.context.startActivity(intent)
-            } catch (_: ActivityNotFoundException) {
-            }
-        }
-
-        val tcpPort = EnvironmentUtils.getAdbTcpPort()
-        dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
-            if (tcpPort != -1) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val target = PortDiscovery.findDirectAdbPort()
-                    if (target in 1..65535) {
-                        withContext(Dispatchers.Main) {
-                            if (isAdded) startAndDismiss(target)
-                        }
-                    }
+        val primaryButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+        if (dialogTcpPort == -1 && showPairingInsteadOfDev) {
+            val updatePairButton: (Boolean) -> Unit = { wifiOk ->
+                primaryButton.post {
+                    primaryButton.isEnabled = wifiOk
+                    primaryButton.alpha = if (wifiOk) 1.0f else 0.4f
                 }
-            } else {
+            }
+            wifiCallback = EnvironmentUtils.registerWifiListener(context, updatePairButton)
+
+            primaryButton.setOnClickListener {
+                if (!EnvironmentUtils.isWifiConnected(it.context)) return@setOnClickListener
                 val activity = activity ?: return@setOnClickListener
                 if ((activity.window?.decorView?.display?.displayId ?: -1) > 0) {
                     val fm = parentFragmentManager
@@ -120,6 +104,39 @@ class AdbDialogFragment : DialogFragment() {
                 } else {
                     startActivity(Intent(activity, AdbPairingTutorialActivity::class.java))
                     dismissAllowingStateLoss()
+                }
+            }
+        } else {
+            val updateDevButton: (Boolean) -> Unit = { wifiOk ->
+                primaryButton.post {
+                    primaryButton.isEnabled = wifiOk
+                    primaryButton.alpha = if (wifiOk) 1.0f else 0.4f
+                }
+            }
+            wifiCallback = EnvironmentUtils.registerWifiListener(context, updateDevButton)
+
+            primaryButton.setOnClickListener {
+                if (!EnvironmentUtils.isWifiConnected(it.context)) return@setOnClickListener
+
+                val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                intent.putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
+                try {
+                    it.context.startActivity(intent)
+                } catch (_: ActivityNotFoundException) {
+                }
+            }
+        }
+
+        if (dialogTcpPort != -1) {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val target = PortDiscovery.findDirectAdbPort()
+                    if (target in 1..65535) {
+                        withContext(Dispatchers.Main) {
+                            if (isAdded) startAndDismiss(target)
+                        }
+                    }
                 }
             }
         }

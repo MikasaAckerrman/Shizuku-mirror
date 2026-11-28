@@ -214,6 +214,7 @@ private class ViewModel(context: Context) : androidx.lifecycle.ViewModel() {
                 it.printStackTrace()
             }.onSuccess {
                 if (it) {
+                    ShizukuSettings.setAdbTrusted(true)
                     _result.postValue(null)
                 }
             }

@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 object FastPortScout {
 
-    fun findActiveWadbPort(timeoutTotalMs: Long = 600): Int {
+    fun findActiveWadbPort(timeoutTotalMs: Long = 600, include5555: Boolean = true): Int {
         val candidates = ArrayList<Int>(32)
 
         for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
@@ -24,7 +24,7 @@ object FastPortScout {
                     if (parts.size >= 4 && parts[3] == "0A") { // LISTEN
                         val hex = parts[1].substringAfterLast(':')
                         val p = hex.toIntOrNull(16)
-                        if (p != null && (p == 5555 || p in 30000..65535)) {
+                        if (p != null && ((include5555 && p == 5555) || (p in 30000..65535 && p != 5555))) {
                             if (!candidates.contains(p)) candidates.add(p)
                         }
                     }
@@ -33,7 +33,7 @@ object FastPortScout {
             }
         }
 
-        if (!candidates.contains(5555)) {
+        if (include5555 && !candidates.contains(5555)) {
             candidates.add(5555)
         }
 

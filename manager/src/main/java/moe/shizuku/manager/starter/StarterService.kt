@@ -135,12 +135,18 @@ class StarterService : Service() {
 
     private fun finishError(throwable: Throwable) {
         StarterState.setStarting(false)
+        if (throwable is SSLProtocolException) {
+            ShizukuSettings.setAdbTrusted(false)
+        }
         updateNotification("Shizuku failed - tap for details", false)
         val intent = Intent(this, StarterActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
             putExtra(StarterActivity.EXTRA_IS_ROOT, false)
             putExtra(StarterActivity.EXTRA_SILENT, false)
             putExtra(StarterActivity.EXTRA_OUTPUT, sb.toString())
+            if (throwable is SSLProtocolException) {
+                putExtra(StarterActivity.EXTRA_NEEDS_PAIRING, true)
+            }
         }
         startActivity(intent)
         stopSelf()
@@ -212,14 +218,46 @@ class StarterService : Service() {
                     return@launch
                 }
 
+                val is5555Mode = host == "127.0.0.1" && port == 5555 &&
+                        ShizukuSettings.getPreferredStartMethod() != ShizukuSettings.START_METHOD_WIRELESS
                 val allowWadbFallback = (port != 5555) || (ShizukuSettings.getPreferredStartMethod() == ShizukuSettings.START_METHOD_WIRELESS)
                 var lastError: Throwable? = null
                 var success = false
                 var currentPort = port
+                var triedTcp5555Activation = false
                 for (attempt in 0 until 3) {
                     if (attempt > 0) {
                         sb.append("\n[retry ADB connection attempt ${attempt + 1}/3]\n")
-                        if (host == "127.0.0.1" && allowWadbFallback) {
+                        if (is5555Mode && currentPort == 5555 && !triedTcp5555Activation &&
+                            !AdbClient.isAdbListener(host, 5555, 200)
+                        ) {
+                            triedTcp5555Activation = true
+                            val opened = try {
+                                moe.shizuku.manager.adb.PortDiscovery.activateTcpPortViaWadb(
+                                    this@StarterService,
+                                    key,
+                                    5555
+                                ) { line -> sb.append(line) }
+                            } catch (ssl: SSLProtocolException) {
+                                lastError = ssl
+                                sb.append("Wireless ADB pairing rejected (SSLProtocolException); pairing is required.\n")
+                                break
+                            }
+                            if (!opened) {
+                                val fallbackWadb = moe.shizuku.manager.adb.PortDiscovery.rediscoverWadbPort(
+                                    this@StarterService,
+                                    excludePort = 5555,
+                                    mdnsTimeoutMs = 900
+                                )
+                                if (fallbackWadb in 1..65535) {
+                                    currentPort = fallbackWadb
+                                    sb.append("Port 5555 unavailable; falling back to active WADB port: $currentPort\n")
+                                } else {
+                                    sb.append("\nPort 5555 is closed and no active Wireless debugging session was found.\n")
+                                    break
+                                }
+                            }
+                        } else if (host == "127.0.0.1" && allowWadbFallback) {
                             if (!AdbClient.isAdbListener(host, currentPort, 250)) {
                                 val discovered = moe.shizuku.manager.adb.PortDiscovery.rediscoverWadbPort(this@StarterService, currentPort)
                                 if (discovered in 1..65535 && discovered != currentPort) {
@@ -233,12 +271,31 @@ class StarterService : Service() {
                     try {
                         AdbClient(host, currentPort, key).use { client ->
                             client.connect()
+                            if (currentPort != 5555) {
+                                ShizukuSettings.setAdbTrusted(true)
+                            }
                             client.shellCommand(Starter.internalCommand) {
                                 sb.append(String(it))
                             }
                         }
                         success = verifyServerStarted(sb)
-                        if (success) break
+                        if (success) {
+                            if (host == "127.0.0.1" && currentPort != 5555 &&
+                                EnvironmentUtils.getAdbTcpPort() != 5555 &&
+                                !AdbClient.isAdbListener(host, 5555, 150)
+                            ) {
+                                @Suppress("OPT_IN_USAGE")
+                                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                                    runCatching {
+                                        AdbClient(host, currentPort, key, 6000).use { tcpClient ->
+                                            tcpClient.connect()
+                                            tcpClient.tcpip(5555)
+                                        }
+                                    }
+                                }
+                            }
+                            break
+                        }
                     } catch (e: Throwable) {
                         lastError = e
                         sb.append("Attempt ${attempt + 1} (port $currentPort) error: ${e.javaClass.simpleName}: ${e.message}\n")
@@ -255,6 +312,12 @@ class StarterService : Service() {
                             sb.append("[no root access: use \"Start with root\" to restart the server]\n")
                             break
                         }
+                    }
+                    if (is5555Mode && attempt >= 1 && lastError is ConnectException &&
+                        !AdbClient.isAdbListener(host, currentPort, 150)
+                    ) {
+                        sb.append("\nPort 5555 is closed (requires one-time activation via Wireless debugging after reboot when device is not rooted).\n")
+                        break
                     }
                 }
 

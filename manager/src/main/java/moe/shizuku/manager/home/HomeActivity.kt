@@ -75,6 +75,9 @@ abstract class HomeActivity : AppBarActivity() {
         homeModel.serviceStatus.observe(this) {
             if (it.status == Status.SUCCESS) {
                 val status = homeModel.serviceStatus.value?.data ?: return@observe
+                if (status.isRunning && status.uid != 0) {
+                    ShizukuSettings.setAdbTrusted(true)
+                }
                 if (statusChanged(status)) {
                     adapter.updateData()
                 }

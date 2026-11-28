@@ -26,6 +26,7 @@ public class ShizukuSettings {
     public static final String LANGUAGE = "language";
     public static final String KEEP_START_ON_BOOT = "start_on_boot";
     public static final String PREFERRED_START_METHOD = "preferred_start_method";
+    public static final String ADB_TRUSTED = "adb_trusted";
 
     public static final String START_METHOD_ADB_5555 = "adb_5555";
     public static final String START_METHOD_ROOT = "root";
@@ -95,6 +96,14 @@ public class ShizukuSettings {
 
     public static void setPreferredStartMethod(String method) {
         getPreferences().edit().putString(PREFERRED_START_METHOD, method).apply();
+    }
+
+    public static boolean isAdbTrusted() {
+        return getPreferences().getBoolean(ADB_TRUSTED, false);
+    }
+
+    public static void setAdbTrusted(boolean trusted) {
+        getPreferences().edit().putBoolean(ADB_TRUSTED, trusted).apply();
     }
 
     @AppCompatDelegate.NightMode

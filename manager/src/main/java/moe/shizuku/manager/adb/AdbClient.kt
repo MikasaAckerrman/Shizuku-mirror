@@ -176,6 +176,78 @@ class AdbClient(
         if (message.command != A_CNXN) error("not A_CNXN: ${message.toStringShort()}")
     }
 
+    /**
+     * Switches adbd to TCP/IP mode on [port] (equivalent to `adb tcpip <port>`).
+     * Works over an already-authenticated ADB/WADB connection without root.
+     */
+    @Throws(IOException::class)
+    fun tcpip(port: Int = 5555): Boolean {
+        if (port !in 1..65535) return false
+        val localId = 1
+        write(A_OPEN, localId, 0, "tcpip:$port")
+
+        var message = read()
+        var skipped = 0
+        while (message.command != A_OKAY && message.command != A_CLSE) {
+            if (++skipped > MAX_PRE_OPEN_SKIP) {
+                return false
+            }
+            Log.w(TAG, "Unexpected message before tcpip open response: ${message.toStringShort()}")
+            message = read()
+        }
+
+        return when (message.command) {
+            A_OKAY -> {
+                val serverRemoteId = message.arg0
+                val response = StringBuilder()
+                val prevTimeout = tlsSocket?.soTimeout ?: socket?.soTimeout ?: readTimeoutMs
+                try {
+                    // После A_OKAY adbd отправляет "restarting in TCP mode port: 5555\n" и
+                    // перезапускает сокет. На части прошивок вместо A_CLSE TLS-поток просто
+                    // замолкает до таймаута, поэтому ждём ответ коротко (2 с), а не 20 с.
+                    if (useTls) {
+                        tlsSocket?.soTimeout = 2000
+                    } else {
+                        socket?.soTimeout = 2000
+                    }
+                    while (true) {
+                        val pkt = read()
+                        val remoteId = if (pkt.arg0 != 0) pkt.arg0 else serverRemoteId
+                        if (pkt.command == A_WRTE) {
+                            if (pkt.data_length > 0 && pkt.data != null) {
+                                response.append(String(pkt.data))
+                            }
+                            write(A_OKAY, localId, remoteId)
+                        } else if (pkt.command == A_CLSE) {
+                            write(A_CLSE, localId, remoteId)
+                            break
+                        }
+                    }
+                } catch (e: IOException) {
+                    // adbd often resets or stalls the transport immediately after accepting tcpip:<port>
+                    Log.d(TAG, "tcpip($port) stream ended after A_OKAY: ${e.message}")
+                } finally {
+                    runCatching {
+                        if (useTls) {
+                            tlsSocket?.soTimeout = prevTimeout
+                        } else {
+                            socket?.soTimeout = prevTimeout
+                        }
+                    }
+                }
+                val text = response.toString()
+                Log.i(TAG, "tcpip($port) response: $text")
+                !text.contains("unable", ignoreCase = true) && !text.contains("error", ignoreCase = true)
+            }
+            A_CLSE -> {
+                val remoteId = message.arg0
+                runCatching { write(A_CLSE, localId, remoteId) }
+                false
+            }
+            else -> false
+        }
+    }
+
     fun shellCommand(command: String, listener: ((ByteArray) -> Unit)?) {
         val localId = 1
         write(A_OPEN, localId, 0, "shell:$command")
